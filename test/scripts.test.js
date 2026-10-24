@@ -56,6 +56,56 @@ test('restore script refuses plugin mode without touching the environment', () =
   assert.match(ps1, /manifest\.json/)
 })
 
+test('manifest links are validated before the first robocopy', () => {
+  const ps1 = renderRestorePs1(meta)
+  const linksCheck = ps1.indexOf('$manifest.links -isnot [System.Array]')
+  const containmentCheck = ps1.indexOf('StartsWith($profilePrefix')
+  const firstRobocopy = ps1.indexOf('Invoke-Robocopy -Source $extractedInstall')
+  assert.ok(linksCheck > 0, 'links array validation is missing')
+  assert.ok(containmentCheck > linksCheck, 'link path containment must follow the shape check')
+  assert.ok(firstRobocopy > containmentCheck, 'manifest validation must run before robocopy')
+  assert.match(ps1, /指向 profile 之外/)
+  assert.match(ps1, /\[IO\.Path\]::IsPathRooted\(\$relativePath\)/)
+})
+
+test('node_modules restore excludes every manifest link path', () => {
+  const ps1 = renderRestorePs1(meta)
+  assert.ok(ps1.includes('$linkExclusions += $destination'))
+  assert.ok(ps1.includes("$nodeModulesExclusions = @($SelfPluginDir, 'dsh-crash-backup') + $linkExclusions"))
+  assert.ok(ps1.includes('-ExcludeDirs $nodeModulesExclusions'))
+  assert.match(ps1, /Get-LiveLinkPaths -Root \$profileNodeModules -KeepPath \$SelfPluginDir/)
+  assert.match(ps1, /Remove-LiveLinkPath -Path \$liveLink/)
+  assert.ok(
+    ps1.indexOf('Remove-LiveLinkPath -Path $liveLink') <
+      ps1.indexOf('Invoke-Robocopy -Source $extractedInstall'),
+    'live links must be removed before the first robocopy',
+  )
+})
+
+test('home copy cannot override the restored profile', () => {
+  const ps1 = renderRestorePs1(meta)
+  assert.match(ps1, /-ExcludeDirs @\('dsh-crash-backup', \$profilesDir, 'profiles'\)/)
+})
+
+test('restore script rebuilds junctions without cmd quoting traps', () => {
+  const ps1 = renderRestorePs1(meta)
+  assert.match(ps1, /New-Item -ItemType Junction/)
+  assert.match(ps1, /Remove-LiveLinkPath/)
+  assert.equal(ps1.includes('cmd.exe /c mklink'), false)
+  assert.equal(ps1.includes('cmd.exe /c rmdir'), false)
+})
+
+test('processes are re-detected after confirmation and prompts are guarded', () => {
+  const ps1 = renderRestorePs1(meta)
+  const prompt = ps1.indexOf('$stopAnswer = Read-Answer')
+  const redetect = ps1.indexOf('$dshProcesses = @(Get-DshProcesses -Root $InstallDir)')
+  assert.ok(prompt > 0, 'process confirmation prompt is missing')
+  assert.ok(redetect > prompt, 'DSH processes must be re-detected after confirmation')
+  assert.match(ps1, /\[Console\]::IsInputRedirected/)
+  assert.match(ps1, /function Read-Answer/)
+  assert.match(ps1, /\[System\.IO\.Directory\]::Delete/)
+})
+
 test('restore script embeds save metadata as literal strings', () => {
   const ps1 = renderRestorePs1({ ...meta, installDir: "C:\\O'Brien\\dsh" })
   assert.ok(ps1.includes("$SavedInstallDir = 'C:\\O''Brien\\dsh'"))
