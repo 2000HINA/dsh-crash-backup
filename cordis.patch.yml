@@ -1,0 +1,6 @@
+# dsh-crash-backup: one settings section; the Host half will own the backups.
+- insert:
+    - id: dsh-crash-backup
+      name: 'dsh-crash-backup'
+      config:
+        profile: desktop

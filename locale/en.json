@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Saves",
+    "description": "Compress the current DSH environment into one save that an independent script can restore after a crash."
+  }
+}
