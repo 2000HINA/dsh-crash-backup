@@ -62,6 +62,20 @@ test('reports not-writable when the folder cannot be created', async () => {
   assert.equal(validateBackupDir(join(blocker, 'nested'), env).code, 'not-writable')
 })
 
+test('requires the install and profile safety context', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-context-'))
+  assert.throws(() => validateBackupDir(dir), /installDir/)
+  assert.throws(() => validateBackupDir(dir, { installDir: env.installDir }), /profileDir/)
+  assert.throws(
+    () => validateBackupDir(dir, { installDir: 42, profileDir: env.profileDir }),
+    /installDir/,
+  )
+  assert.throws(
+    () => validateBackupDir(dir, { installDir: env.installDir, profileDir: '   ' }),
+    /profileDir/,
+  )
+})
+
 test('saves and reads the backup root back', async () => {
   const home = await tempHome()
   await saveBackupRoot(home, 'D:\\dsh-backups')
