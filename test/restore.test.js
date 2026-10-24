@@ -29,16 +29,24 @@ test('rejects a mode the restore script does not support', () => {
 })
 
 test('passes the whole start line as one /c command string, not separate spawn args', () => {
-  const { file, args } = buildRestoreCommand({
-    scriptPath: 'C:\\b\\RESTORE.ps1',
-    mode: 'plugins',
-  })
+  const scriptPath = 'C:\\b\\RESTORE.ps1'
+  const { file, args } = buildRestoreCommand({ scriptPath, mode: 'plugins' })
 
   assert.match(file, /System32[\\/]cmd\.exe$/i)
   assert.equal(args.length, 4)
   assert.deepEqual(args.slice(0, 3), ['/d', '/s', '/c'])
   assert.equal(typeof args[3], 'string')
-  assert.ok(args[3].includes('start'))
+
+  const line = args[3]
+  // The empty title is what keeps `start` from treating the quoted
+  // PowerShell path as the window title and silently doing nothing.
+  assert.match(line, /^start "" "[^"]+" /)
+  const powershellAt = line.search(/powershell(?:\.exe)?/i)
+  const fileAt = line.search(/-File\b/)
+  const scriptAt = line.indexOf(`"${scriptPath}"`)
+  assert.ok(powershellAt >= 0, 'powershell must be invoked')
+  assert.ok(powershellAt < fileAt, 'powershell must run before -File')
+  assert.ok(fileAt < scriptAt, 'the quoted script path must follow -File')
   assert.ok(!args.includes('-NoProfile'))
-  assert.ok(!args.includes('C:\\b\\RESTORE.ps1'))
+  assert.ok(!args.includes(scriptPath))
 })
