@@ -14,7 +14,13 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listArchive } from '../lib/archive.js'
-import { cleanupOrphans, createBackup, deleteSave, listSaves } from '../lib/backup.js'
+import {
+  classifyRemoveError,
+  cleanupOrphans,
+  createBackup,
+  deleteSave,
+  listSaves,
+} from '../lib/backup.js'
 import { readIndex, writeIndex } from '../lib/index-file.js'
 
 async function fakeEnv(t) {
@@ -266,5 +272,50 @@ test('a backup root inside dsh home or the plugin data dir is rejected', async (
     () => createBackup({ ...settings, backupRoot: join(settings.home, 'dsh-crash-backup') }),
     /插件数据目录/,
   )
+  assert.deepEqual(await listSaves(settings), [])
+})
+
+test('classifyRemoveError separates gone, busy and unexpected codes', () => {
+  assert.equal(classifyRemoveError('ENOENT'), 'gone')
+  for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
+    assert.equal(classifyRemoveError(code), 'busy', `${code} must be treated as in use`)
+  }
+  for (const code of ['EINVAL', 'EISDIR', 'ENOTEMPTY', 'UNKNOWN', undefined, null, '']) {
+    assert.equal(classifyRemoveError(code), 'error', `${String(code)} must be surfaced`)
+  }
+})
+
+test('listSaves reconciles an index that names different folders', async (t) => {
+  const { settings } = await fakeEnv(t)
+  const manifest = await createBackup(settings)
+  // Same entry count as the folder count, but the id matches no folder: a
+  // count-only comparison would leave the real save unlisted.
+  await writeIndex(settings.backupRoot, [
+    {
+      id: 'dsh-save-20990101-000000',
+      createdAt: '2099-01-01T00:00:00.000Z',
+      dshVersion: '0',
+      pluginCount: 0,
+      sizeBytes: 0,
+      restorable: true,
+      hasProfile: false,
+    },
+  ])
+
+  assert.deepEqual((await listSaves(settings)).map((save) => save.id), [manifest.id])
+  assert.deepEqual(
+    (await readIndex(settings.backupRoot)).saves.map((save) => save.id),
+    [manifest.id],
+  )
+})
+
+test('listSaves ignores zipless folders and tolerates an unwritable index', async (t) => {
+  const { settings } = await fakeEnv(t)
+  await mkdir(settings.backupRoot, { recursive: true })
+  // A damaged leftover without any zip must not count as a save folder.
+  await mkdir(join(settings.backupRoot, 'dsh-save-20261024-070000'), { recursive: true })
+  // A directory named index.json makes every index rebuild fail with EPERM.
+  await mkdir(join(settings.backupRoot, 'index.json'))
+
   assert.deepEqual(await listSaves(settings), [])
 })
