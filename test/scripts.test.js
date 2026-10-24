@@ -23,9 +23,15 @@ const meta = {
   hasProfile: true,
 }
 
-// 守卫分支独有的输出行：`$ModeLabel = if ($Mode -eq 'plugins')` 也包含
-// `if ($Mode -eq 'plugins')`，用它定位守卫会误命中那一行。
-const PLUGINS_GUARD = "Write-Host '插件级回档尚未启用：本脚本目前只支持完整回档。'"
+// 仅插件分支独有的文案与结构锚点：菜单里的「2. 仅回滚插件…」不含这些更长
+// 文本，因此不会误命中菜单行；`$ModeLabel` 也包含 `$Mode -eq 'plugins'`，
+// 定位分支时必须使用整行文案而不是条件表达式。
+const PLUGIN_SCOPE =
+  "Write-Host '仅回滚插件：只恢复插件 profile（package.json、锁文件、patch 与 node_modules）。'"
+const PLUGIN_PREFLIGHT =
+  "if ($Mode -eq 'plugins' -and (-not $HasProfile -or -not $hasProfileEntry))"
+const PLUGIN_SNAPSHOT = "('{0}-plugins' -f $snapshotStamp)"
+const FULL_GATE = "if ($Mode -eq 'full') {"
 const MENU_GATE = 'if (-not $ModeExplicit)'
 const MENU_END = "$ModeLabel = if ($Mode -eq 'plugins')"
 
@@ -52,14 +58,122 @@ test('restore script asks before touching anything', () => {
   assert.match(ps1, /_pre-restore/)
 })
 
-test('restore script refuses plugin mode without touching the environment', () => {
+test('plugins mode is a real restore branch instead of the old exit-2 stub', () => {
   const ps1 = renderRestorePs1(meta)
-  assert.match(ps1, /插件级回档尚未启用/)
-  assert.match(ps1, /exit 2/)
+  assert.equal(ps1.includes('插件级回档尚未启用'), false)
+  assert.equal(ps1.includes('exit 2'), false)
   assert.match(ps1, /#Requires -Version 5\.1/)
   assert.match(ps1, /\[ValidateSet\('full', 'plugins'\)\]/)
   assert.match(ps1, /\$PayloadRoot = \$PSScriptRoot/)
   assert.match(ps1, /manifest\.json/)
+  assert.ok(ps1.includes(PLUGIN_SCOPE), 'plugins mode must print its restore scope')
+  assert.ok(ps1.includes(PLUGIN_PREFLIGHT), 'plugins mode must preflight the archive profile')
+})
+
+test('plugins mode warns about its limited scope and DSH version risk', () => {
+  const ps1 = renderRestorePs1(meta)
+  const scope = ps1.indexOf(PLUGIN_SCOPE)
+  const confirm = ps1.indexOf('$confirm = Read-Answer')
+  assert.ok(scope > 0, 'plugins scope warning is missing')
+  assert.ok(scope < confirm, 'plugins scope warning must come before the confirmation')
+
+  const block = ps1.slice(scope, confirm)
+  assert.match(block, /安装目录/)
+  assert.match(block, /用户数据/)
+  assert.match(block, /插件数据/)
+  assert.match(block, /DSH 版本/)
+  assert.match(block, /兼容性警告/)
+  assert.ok(
+    block.includes('$CurrentDshVersion -ne $SavedDshVersion'),
+    'the compatibility warning must compare the current and saved DSH versions',
+  )
+})
+
+test('plugins mode preflights the archive profile before the first write', () => {
+  const ps1 = renderRestorePs1(meta)
+  const preflight = ps1.indexOf(PLUGIN_PREFLIGHT)
+  const snapshot = ps1.indexOf('$snapshotStamp = Get-Date')
+  const extract = ps1.indexOf('$script:TempDir = Join-Path (Join-Path $BackupRoot')
+  const install = ps1.indexOf('Invoke-Robocopy -Source $extractedInstall')
+
+  assert.ok(preflight > 0, 'plugins profile preflight is missing')
+  assert.ok(ps1.includes('& $TarPath -tf $ZipPath'), 'the preflight must list archive members')
+  assert.ok(ps1.includes('$hasProfileEntry = $true'), 'the profile member must be detected')
+  assert.ok(preflight < snapshot, 'the preflight must run before the snapshot')
+  assert.ok(preflight < extract, 'the preflight must run before extraction')
+  assert.ok(preflight < install, 'the preflight must run before any robocopy')
+
+  const preflightBlock = ps1.slice(preflight, ps1.indexOf('\n    }', preflight))
+  assert.match(preflightBlock, /throw/)
+
+  // Missing profile / hasProfile=false exits 1 after Wait-AnyKey.
+  const catchBlock = ps1.slice(ps1.lastIndexOf('} catch {'))
+  assert.ok(catchBlock.includes('Wait-AnyKey'))
+  assert.ok(catchBlock.includes('exit 1'))
+})
+
+test('plugins mode snapshots only the profile config with a -plugins suffix', () => {
+  const ps1 = renderRestorePs1(meta)
+  const snapshotStamp = ps1.indexOf('$snapshotStamp = Get-Date')
+  const pluginStart = ps1.indexOf("if ($Mode -eq 'plugins') {", snapshotStamp)
+  const elseStart = ps1.indexOf('} else {', pluginStart)
+  const snapshotEnd = ps1.indexOf('New-Item -ItemType Directory -Path $SnapshotRoot', elseStart)
+  assert.ok(snapshotStamp > 0, 'the snapshot block is missing')
+  assert.ok(pluginStart > snapshotStamp, 'the plugin snapshot branch is missing')
+  assert.ok(elseStart > pluginStart, 'the full snapshot branch is missing')
+  assert.ok(snapshotEnd > elseStart, 'the snapshot block is not closed')
+
+  const pluginSnapshot = ps1.slice(pluginStart, elseStart)
+  assert.ok(pluginSnapshot.includes(PLUGIN_SNAPSHOT), 'the snapshot must use <timestamp>-plugins')
+  for (const name of ['package.json', 'pnpm-lock.yaml', 'cordis.patch.yml']) {
+    assert.ok(
+      pluginSnapshot.includes(`Join-Path $ProfileDir '${name}'`),
+      `the plugin snapshot is missing ${name}`,
+    )
+  }
+  assert.equal(pluginSnapshot.includes('$HomeDir'), false, 'the plugin snapshot must not read home')
+
+  const fullSnapshot = ps1.slice(elseStart, snapshotEnd)
+  assert.ok(fullSnapshot.includes("Join-Path $HomeDir 'cordis.patch.yml'"))
+  assert.ok(fullSnapshot.includes("Join-Path $HomeDir 'settings.yaml'"))
+})
+
+test('plugins mode extracts only the profile and manifest, never install/home/runtimes', () => {
+  const ps1 = renderRestorePs1(meta)
+  const profileMember = ps1.indexOf("$profileMember = 'profile/{0}' -f $SavedProfile")
+  const fullExtract = ps1.indexOf('& $TarPath -xf $ZipPath -C $script:TempDir\n')
+  assert.ok(profileMember > 0, 'plugin-only extraction is missing')
+  assert.ok(fullExtract > profileMember, 'full extraction must stay in the else branch')
+
+  const pluginExtract = ps1.slice(profileMember, fullExtract)
+  assert.ok(pluginExtract.includes('& $TarPath -xf $ZipPath -C $script:TempDir $profileMember'))
+  assert.ok(pluginExtract.includes("& $TarPath -xf $ZipPath -C $script:TempDir 'manifest.json'"))
+  for (const forbidden of ['$extractedInstall', '$extractedHome', '$extractedRuntimes']) {
+    assert.equal(pluginExtract.includes(forbidden), false, `${forbidden} must not be extracted`)
+  }
+})
+
+test('install, home and runtimes restores are unreachable in plugins mode', () => {
+  const ps1 = renderRestorePs1(meta)
+
+  function guardedBlock(marker) {
+    const markerIndex = ps1.indexOf(marker)
+    assert.ok(markerIndex > 0, `${marker} is missing`)
+    const gate = ps1.lastIndexOf(FULL_GATE, markerIndex)
+    assert.ok(gate > 0, `${marker} must sit inside a full-mode guard`)
+    const end = ps1.indexOf('\n    }', gate)
+    assert.ok(end > markerIndex, `the full-mode guard around ${marker} must close`)
+    return { gate, end }
+  }
+
+  const install = guardedBlock('Invoke-Robocopy -Source $extractedInstall')
+  const home = guardedBlock('Invoke-Robocopy -Source $extractedHome')
+  const runtimes = guardedBlock('Invoke-Robocopy -Source $extractedRuntimes')
+  assert.ok(install.end < home.gate, 'install and home/runtimes need separate full-mode guards')
+  assert.ok(home.end > runtimes.gate, 'home and runtimes share one full-mode guard')
+
+  const profile = ps1.indexOf('Invoke-Robocopy -Source $extractedProfile')
+  assert.ok(profile > install.end, 'profile restore must stay outside the full-only install guard')
 })
 
 test('restore script offers a mode menu only without explicit -Mode', () => {
@@ -71,11 +185,11 @@ test('restore script offers a mode menu only without explicit -Mode', () => {
   // 到分支后的下一条语句之间取值，而不是只断言文本存在。
   const menuGate = ps1.indexOf(MENU_GATE)
   const menuEnd = ps1.indexOf(MENU_END)
-  const guardStart = ps1.indexOf(PLUGINS_GUARD)
+  const branchStart = ps1.indexOf(PLUGIN_SCOPE)
   assert.ok(menuGate > 0, 'menu must be gated on explicit -Mode')
   assert.ok(ps1.slice(menuGate, menuGate + 40).includes('$ModeExplicit'))
   assert.ok(menuEnd > menuGate, 'menu branch end marker is missing')
-  assert.ok(guardStart > menuEnd, 'menu must run before the plugins guard')
+  assert.ok(branchStart > menuEnd, 'menu must run before the plugins branch')
   const menuBlock = ps1.slice(menuGate, menuEnd)
 
   assert.match(menuBlock, /请选择回档方式/)
@@ -120,7 +234,7 @@ test('mode menu comes before the Y/N confirmation, which names the chosen mode',
   assert.ok(ps1.includes("$ModeLabel = if ($Mode -eq 'plugins') { '仅回滚插件' } else { '完整回档' }"))
 })
 
-test('explicit -Mode skips the menu and the plugins guard exits 2 before confirmation', () => {
+test('explicit -Mode skips the menu and plugins mode enters the real branch', () => {
   const ps1 = renderRestorePs1(meta)
   assert.match(ps1, /\[ValidateSet\('full', 'plugins'\)\]/)
   assert.match(ps1, /\[string\]\$Mode = 'full'/)
@@ -132,14 +246,13 @@ test('explicit -Mode skips the menu and the plugins guard exits 2 before confirm
   assert.ok(menuGate > 0, 'menu gate is missing')
   assert.ok(menu > menuGate && menu < menuEnd, 'menu must sit inside the explicit-mode gate')
 
-  // 用守卫独有的输出行定位，避免误命中 `$ModeLabel` 那一行；守卫必须在
-  // 确认提示之前以 exit 2 结束。
-  const guard = ps1.indexOf(PLUGINS_GUARD)
+  // 显式 plugins 不再安全退出：范围提示必须出现在确认之前，旧 stub 必须消失。
+  const scope = ps1.indexOf(PLUGIN_SCOPE)
   const confirmPrompt = ps1.indexOf('$confirm = Read-Answer')
-  const exitTwo = ps1.indexOf('exit 2', guard)
-  assert.ok(guard > 0, 'plugins guard is missing')
-  assert.ok(guard < confirmPrompt, 'plugins guard must exit before the confirmation')
-  assert.ok(exitTwo > guard && exitTwo < confirmPrompt, 'the guard must exit 2 before the confirmation')
+  assert.ok(scope > 0, 'plugins scope warning is missing')
+  assert.ok(scope < confirmPrompt, 'plugins scope warning must come before the confirmation')
+  assert.equal(ps1.includes('插件级回档尚未启用'), false)
+  assert.equal(ps1.includes('exit 2'), false)
 })
 
 test('manifest links are validated before the first robocopy', () => {

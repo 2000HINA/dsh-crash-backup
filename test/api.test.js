@@ -181,7 +181,9 @@ test('startRestore rejects a malformed id and an unsupported mode with 400', asy
 })
 
 test('startRestore launches the restore script of the save and marks the handlers busy', async () => {
-  const { deps, calls } = makeDeps({ listSaves: async () => [{ id: SAVE_ID }] })
+  const { deps, calls } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: true }],
+  })
   const handlers = createHandlers({ settings: makeSettings(), deps })
 
   const body = await handlers.startRestore({ id: SAVE_ID, mode: 'plugins' })
@@ -197,6 +199,47 @@ test('startRestore launches the restore script of the save and marks the handler
   const status = await handlers.status()
   assert.equal(status.busy, true)
   assert.equal(status.job.phase, 'restore')
+})
+
+test('startRestore rejects plugin mode with 400 when the save has no profile', async () => {
+  const { deps, calls } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: false }],
+  })
+  const handlers = createHandlers({ settings: makeSettings(), deps })
+
+  await assert.rejects(handlers.startRestore({ id: SAVE_ID, mode: 'plugins' }), (error) => {
+    assert.equal(error.status, 400)
+    assert.match(error.message, /profile|插件/)
+    return true
+  })
+
+  assert.deepEqual(calls.launched, [], 'an unsupported plugin restore must not launch a console')
+  assert.equal((await handlers.status()).busy, false)
+})
+
+test('startRestore accepts plugin mode when the save has a profile', async () => {
+  const { deps, calls } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: true }],
+  })
+  const handlers = createHandlers({ settings: makeSettings(), deps })
+
+  const body = await handlers.startRestore({ id: SAVE_ID, mode: 'plugins' })
+
+  assert.deepEqual(body, { restoring: true, id: SAVE_ID, mode: 'plugins' })
+  assert.equal(calls.launched.length, 1)
+  assert.equal(calls.launched[0].mode, 'plugins')
+})
+
+test('full mode still launches when the save has no profile', async () => {
+  const { deps, calls } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: false }],
+  })
+  const handlers = createHandlers({ settings: makeSettings(), deps })
+
+  await handlers.startRestore({ id: SAVE_ID, mode: 'full' })
+
+  assert.equal(calls.launched.length, 1)
+  assert.equal(calls.launched[0].mode, 'full')
 })
 
 test('startRestore rejects a save that is not in the backup root', async () => {

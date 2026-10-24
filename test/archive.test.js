@@ -1,13 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   createArchive,
   dirSize,
   extractPrefix,
+  extractProfile,
   listArchive,
   readArchiveEntry,
   sha256File,
@@ -91,6 +92,53 @@ test('extractPrefix rejects a prefix the archive does not contain', async () => 
     manifest: {},
   })
   await assert.rejects(extractPrefix(zip, 'missing', join(root, 'out')), /archive has no/)
+})
+
+test('extractProfile extracts only the profile and manifest', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-arc-'))
+  await mkdir(join(root, 'profile', 'desktop'), { recursive: true })
+  await mkdir(join(root, 'install'), { recursive: true })
+  await writeFile(join(root, 'profile', 'desktop', 'package.json'), '{}')
+  await writeFile(join(root, 'install', 'version'), '44.7.0')
+  const zip = join(root, 'profile.zip')
+  await createArchive({
+    zipPath: zip,
+    sources: [
+      { name: 'profile/desktop', path: join(root, 'profile', 'desktop') },
+      { name: 'install', path: join(root, 'install') },
+    ],
+    manifest: { links: [] },
+  })
+
+  const dest = join(root, 'out')
+  await extractProfile(zip, 'desktop', dest)
+
+  // The manifest is needed to rebuild the local dependency links; nothing else
+  // (install/) may be expanded by a plugin-only restore.
+  assert.deepEqual((await readdir(dest)).sort(), ['manifest.json', 'profile'])
+  assert.deepEqual(await readdir(join(dest, 'profile')), ['desktop'])
+  assert.deepEqual(await readdir(join(dest, 'profile', 'desktop')), ['package.json'])
+  assert.match(await readFile(join(dest, 'manifest.json'), 'utf8'), /links/)
+})
+
+test('extractProfile rejects an archive without the requested profile', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-arc-'))
+  await mkdir(join(root, 'src'), { recursive: true })
+  await writeFile(join(root, 'src', 'app.txt'), 'x')
+  const zip = join(root, 'noprofile.zip')
+  await createArchive({
+    zipPath: zip,
+    sources: [{ name: 'src', path: join(root, 'src') }],
+    manifest: {},
+  })
+
+  await assert.rejects(
+    extractProfile(zip, 'desktop', join(root, 'out')),
+    (error) => {
+      assert.equal(error.message, 'archive has no profile/desktop')
+      return true
+    },
+  )
 })
 
 test('dirSize counts nested files without following a junction', async () => {
