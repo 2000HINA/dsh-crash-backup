@@ -151,18 +151,27 @@ C:\tool\dsh-backups\
 - **`/MIR` 会删除文件**：完整回档会把安装目录和插件 profile 恢复到存档时的状态，存档之后新增或修改的内容都会丢失。确认要回到那一刻再执行。
 - **本插件会保留自己**：恢复 profile 时排除 `node_modules\dsh-crash-backup`，并用 `manifest.json` 记录的信息重建 `link:` 依赖的 junction；如果存档创建时插件还没安装，脚本会提示重新安装。
 - **只恢复自己创建的存档**：`RESTORE.ps1` 会执行恢复逻辑，不要运行来路不明的存档脚本。
-- **备份不是瞬间快照**：压缩时 DSH 仍在运行，文件可能在写入过程中变化；重要操作前建议先关闭 DSH 再备份。
+- **备份不是瞬间快照**：压缩时 DSH 仍在运行，文件可能在写入过程中变化。重要操作前先备份；备份进行中不要安装或升级插件，也不要修改设置。
 
 ## 与旧插件共存
 
 - 旧插件 `dsh-save-slots` 和本插件会各自显示一个「存档」入口。启用本插件前，先在侧栏「插件」页禁用或移除 `dsh-save-slots`，不要同时启用。
 - 本插件只识别「`dsh-save-*` 文件夹里恰好有一个 `.zip`」的存档，旧插件的 `payload` 目录格式不会出现在列表里。
-- **重要**：本插件备份前会清理 `dsh-save-*` 下没有压缩包的残留目录，而旧存档正好是这个形态。两者共用同一个备份根时，请先把旧存档整体移到其它目录（例如 `D:\dsh-save-slots-backups`），再创建第一份新存档；旧存档仍可用它自带的 `RESTORE.cmd` 回档。
+- **重要**：旧插件的默认备份根也是 `C:\tool\dsh-backups`，与本插件默认值相同，所以**默认就是共用同一个目录**。本插件备份前会清理 `dsh-save-*` 下没有压缩包的残留目录，而旧存档正好是这个形态；不处理的话，第一次新备份就会删除这些旧存档。启用本插件后、创建第一份新存档前，先点设置页 **更改目录** 把新插件指到另一个目录（例如 `D:\dsh-backups`），或把旧存档整体移到 `D:\dsh-save-slots-backups`；旧存档仍可用它自带的 `RESTORE.cmd` 回档。后续修复会让 `cleanupOrphans` 不再删除非 `.partial` 的旧存档目录，届时这段警告会简化。
 
 ## 卸载
 
 1. 在侧栏「插件」页禁用 `dsh-crash-backup`；需要彻底移除时用「移除」，或从 profile `package.json` 的 `dependencies` 和 `dsh.profile.bundles` 中删掉 `dsh-crash-backup`。
-2. 手动复制安装的，再删除 `%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-crash-backup`。
+2. 手动复制安装的还要删两处：`%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-crash-backup`，以及 profile `cordis.patch.yml` 中安装时追加的 `- insert:` 块（`id: dsh-crash-backup`）。只删除这一段，不要动其它插件配置；保留它会导致重启后 Loader 仍尝试加载已被删除的包并报错。
+
+   ```yaml
+   - insert:
+       - id: dsh-crash-backup
+         name: 'dsh-crash-backup'
+         config:
+           profile: desktop
+   ```
+
 3. 重启 DSH。
 
 **存档和设置不会被删除**：存档在备份目录里，`%USERPROFILE%\.dsh\dsh-crash-backup\settings.json` 也会保留。不再需要时再手动删除备份目录；每份存档自带恢复脚本，即使插件已卸载也仍可回档。
