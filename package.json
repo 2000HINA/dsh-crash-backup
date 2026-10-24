@@ -1,9 +1,17 @@
 {
   "name": "dsh-crash-backup",
   "version": "0.1.0",
-  "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Compressed DSH environment backups with a crash-safe restore script.",
+  "author": "",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "backup",
+    "restore"
+  ],
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
