@@ -1,7 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHandlers } from '../lib/api.js'
+import { restoreLeaseExists, restoreLeasePath } from '../lib/restore.js'
 
 const SAVE_ID = 'dsh-save-20260101-120000'
 const OTHER_SAVE_ID = 'dsh-save-20260102-130000'
@@ -50,6 +53,9 @@ function makeDeps(overrides = {}) {
       calls.opened.push(target)
     },
     readDshVersion: async () => '1.2.3',
+    restoreLeaseExists: async () => false,
+    backupRootExists: async () => true,
+    longPathsWarning: async () => '',
     ...overrides,
   }
   return { deps, calls }
@@ -294,6 +300,27 @@ test('updateLocation rejects paths inside home or the plugin data directory', as
   }
 })
 
+test('updateLocation allows the home fallback folder but rejects other home paths', async () => {
+  const { deps, calls } = makeDeps()
+  const settings = makeSettings()
+  const handlers = createHandlers({ settings, deps })
+
+  await assert.rejects(
+    handlers.updateLocation({ path: 'C:\\Users\\me\\.dsh\\other-backups' }),
+    (error) => {
+      assert.equal(error.status, 400)
+      assert.match(error.message, /用户目录/)
+      return true
+    },
+  )
+
+  const body = await handlers.updateLocation({ path: 'C:\\Users\\me\\.dsh\\dsh-backups' })
+  assert.deepEqual(body, { backupRoot: 'C:\\Users\\me\\.dsh\\dsh-backups' })
+  assert.equal(calls.init.length, 1)
+  assert.equal(settings.backupRootSource, 'saved')
+  assert.equal(settings.backupRootNote, '')
+})
+
 test('status reports the new backup root after updateLocation', async () => {
   const { deps, calls } = makeDeps()
   const settings = makeSettings()
@@ -418,6 +445,142 @@ test('a backup cannot start while updateLocation holds the lock', async () => {
   assert.equal(settings.backupRoot, 'D:\\New Root')
   assert.deepEqual(calls.saved, [{ home: settings.home, target: 'D:\\New Root' }])
   assert.equal(calls.init.length, 1)
+})
+
+test('status reports the backup root source, note and existence', async () => {
+  const { deps } = makeDeps({
+    backupRootExists: async () => false,
+  })
+  const settings = makeSettings({
+    backupRootSource: 'fallback',
+    backupRootNote: '默认目录不可写，已回退',
+  })
+  const handlers = createHandlers({ settings, deps })
+
+  const status = await handlers.status()
+
+  assert.equal(status.backupRootSource, 'fallback')
+  assert.equal(status.backupRootNote, '默认目录不可写，已回退')
+  assert.equal(status.backupRootExists, false)
+})
+
+test('updateLocation maps a foreign non-empty folder to 400 without persisting', async () => {
+  const foreign = Object.assign(new Error('请选择一个空文件夹作为备份目录'), {
+    code: 'E_NOT_OURS',
+  })
+  const { deps, calls } = makeDeps({
+    initializeBackupRoot: async () => {
+      throw foreign
+    },
+  })
+  const settings = makeSettings()
+  const handlers = createHandlers({ settings, deps })
+
+  await assert.rejects(handlers.updateLocation({ path: 'D:\\Not Ours' }), (error) => {
+    assert.equal(error.status, 400)
+    assert.match(error.message, /空文件夹/)
+    return true
+  })
+
+  assert.deepEqual(calls.saved, [])
+  assert.equal(settings.backupRoot, 'C:\\Backups')
+  assert.equal((await handlers.status()).busy, false)
+})
+
+test('a restore lease file keeps status busy and clears when it disappears', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-lease-'))
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+  const { deps } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: true }],
+    restoreLeaseExists: (current) => restoreLeaseExists(current.backupRoot),
+  })
+  const handlers = createHandlers({ settings: makeSettings({ backupRoot: root }), deps })
+
+  assert.equal((await handlers.status()).busy, false)
+
+  await writeFile(restoreLeasePath(root), JSON.stringify({ id: SAVE_ID, mode: 'full' }))
+  const leased = await handlers.status()
+  assert.equal(leased.busy, true, 'the lease keeps the page busy')
+  assert.equal(leased.job, null)
+
+  await rm(restoreLeasePath(root), { force: true })
+  assert.equal((await handlers.status()).busy, false, 'removing the lease clears busy')
+})
+
+test('the restore lock clears as soon as the lease disappears', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-lease-'))
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+  const { deps } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: true }],
+    restoreLeaseExists: (current) => restoreLeaseExists(current.backupRoot),
+  })
+  // A long timer proves the release comes from the lease, not from expiry.
+  const handlers = createHandlers({
+    settings: makeSettings({ backupRoot: root }),
+    deps,
+    restoreLockMs: 60_000,
+  })
+
+  await handlers.startRestore({ id: SAVE_ID, mode: 'full' })
+  assert.equal((await handlers.status()).busy, true)
+
+  await writeFile(restoreLeasePath(root), '{}')
+  assert.equal((await handlers.status()).busy, true, 'the visible lease keeps busy')
+
+  await rm(restoreLeasePath(root), { force: true })
+  const released = await handlers.status()
+  assert.equal(released.busy, false, 'the lock is released without waiting for the timer')
+  assert.equal(released.job, null)
+})
+
+test('startBackup and startRestore refuse while a restore lease exists', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-lease-'))
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+  const { deps, calls } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: true }],
+    restoreLeaseExists: (current) => restoreLeaseExists(current.backupRoot),
+  })
+  const handlers = createHandlers({ settings: makeSettings({ backupRoot: root }), deps })
+  await writeFile(restoreLeasePath(root), '{}')
+
+  await assert.rejects(handlers.startBackup(), (error) => {
+    assert.equal(error.status, 409)
+    return true
+  })
+  await assert.rejects(handlers.startRestore({ id: SAVE_ID, mode: 'full' }), (error) => {
+    assert.equal(error.status, 409)
+    return true
+  })
+
+  assert.deepEqual(calls.launched, [])
+  assert.equal((await handlers.status()).busy, true)
+})
+
+test('backup and restore return an advisory long-path warning', async () => {
+  const warning = 'LongPathsEnabled=0'
+  const { deps } = makeDeps({
+    listSaves: async () => [{ id: SAVE_ID, hasProfile: true }],
+    longPathsWarning: async () => warning,
+  })
+  const handlers = createHandlers({ settings: makeSettings(), deps })
+
+  const backup = await handlers.startBackup()
+  assert.equal(backup.accepted, true)
+  assert.equal(backup.warning, warning)
+
+  const restoreHandlers = createHandlers({ settings: makeSettings(), deps })
+  const restore = await restoreHandlers.startRestore({ id: SAVE_ID, mode: 'full' })
+  assert.equal(restore.warning, warning)
+  assert.deepEqual(
+    { restoring: restore.restoring, id: restore.id, mode: restore.mode },
+    { restoring: true, id: SAVE_ID, mode: 'full' },
+  )
 })
 
 test('a backup cannot start while removeSave holds the lock', async () => {

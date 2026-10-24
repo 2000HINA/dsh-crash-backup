@@ -61,6 +61,8 @@ window.__ModuleLoader__.load({
       desc: '把当前 DSH 环境压缩成单个存档，崩溃后可用独立脚本完整回档。只有手动点击才会备份，DSH 不会自动创建。',
       crashHint: 'DSH 崩溃或无法启动时，打开备份目录，双击任一存档里的 RESTORE.cmd 即可回档。',
       pathLabel: '备份目录',
+      folderMissing: '备份目录不存在；下一次备份会自动重新创建。',
+      credentialWarning: '存档压缩包包含 .credentials.yaml（API Key 等登录凭据，未加密）。请勿把存档或备份目录分享、上传给他人，也不要放进公共网盘。',
       count: '已保存 {count}/{max}',
       backup: '备份当前环境',
       backingUp: '正在备份…',
@@ -92,7 +94,7 @@ window.__ModuleLoader__.load({
       backupDone: '备份完成。',
       backupFailed: '备份失败。',
       deleteDone: '存档已删除。',
-      locationDone: '备份目录已更新。',
+      locationDone: '备份目录已更新。旧目录中的存档仍然保留，不会被移动或删除。',
       loadFailed: '读取存档列表失败：{error}',
       actionFailed: '操作失败：{error}',
       retry: '重试',
@@ -112,6 +114,8 @@ window.__ModuleLoader__.load({
       desc: 'Compress the current DSH environment into one save that an independent script can restore after a crash. Backups only happen when you click the button; DSH never creates one automatically.',
       crashHint: 'If DSH crashes or cannot start, open the backup folder and double-click RESTORE.cmd inside any save to restore it.',
       pathLabel: 'Backup folder',
+      folderMissing: 'The backup folder does not exist; the next backup creates it again.',
+      credentialWarning: 'Save archives include .credentials.yaml with API keys and other credentials in plain text. Never share or upload saves or the backup folder.',
       count: '{count}/{max} saved',
       backup: 'Back up now',
       backingUp: 'Backing up…',
@@ -143,7 +147,7 @@ window.__ModuleLoader__.load({
       backupDone: 'Backup complete.',
       backupFailed: 'Backup failed.',
       deleteDone: 'Save deleted.',
-      locationDone: 'Backup folder updated.',
+      locationDone: 'Backup folder updated. Saves in the old folder are kept and are not moved or deleted.',
       loadFailed: 'Could not load saves: {error}',
       actionFailed: 'Action failed: {error}',
       retry: 'Retry',
@@ -172,6 +176,8 @@ window.__ModuleLoader__.load({
 .dcb-dir-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
 .dcb-dir-label { font-size:11px; color:var(--dsw-alias-label-tertiary); }
 .dcb-dir-path { font-size:12px; font-family:ui-monospace, SFMono-Regular, Consolas, monospace; color:var(--dsw-alias-label-secondary); word-break:break-all; }
+.dcb-dir-note { font-size:11px; line-height:1.5; color:var(--dsw-alias-label-tertiary); }
+.dcb-dir-note-warn { color:var(--dsw-alias-state-warn-primary); }
 .dcb-dir-actions { display:flex; gap:8px; flex:0 0 auto; }
 .dcb-btn { appearance:none; border:1px solid var(--dsw-alias-border-l2); background:transparent; color:var(--dsw-alias-label-primary); border-radius:8px; padding:6px 12px; font-size:12px; line-height:1.5; cursor:pointer; font-family:inherit; transition:background .15s, border-color .15s, opacity .15s; }
 .dcb-btn:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-2); }
@@ -193,6 +199,8 @@ window.__ModuleLoader__.load({
 .dcb-banner-text { min-width:0; }
 .dcb-retry { flex:0 0 auto; }
 .dcb-banner-ok { color:var(--dsw-alias-state-success-primary); background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, transparent); }
+.dcb-banner-warn { color:var(--dsw-alias-state-warn-primary); background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 9%, transparent); }
+.dcb-warn { margin:0; padding:10px 14px; border-radius:10px; font-size:12px; line-height:1.6; color:var(--dsw-alias-state-warn-primary); background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 9%, transparent); }
 .dcb-progress { display:flex; flex-direction:column; gap:6px; }
 .dcb-progress-label { font-size:12px; color:var(--dsw-alias-label-secondary); }
 .dcb-progress-track { height:6px; border-radius:999px; background:var(--dsw-alias-bg-layer-2); overflow:hidden; }
@@ -218,6 +226,7 @@ window.__ModuleLoader__.load({
       const [status, setStatus] = useState(null)
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
+      const [warning, setWarning] = useState('')
       const [pending, setPending] = useState('')
       const [confirm, setConfirm] = useState(null)
       const [restoreMode, setRestoreMode] = useState('full')
@@ -319,6 +328,7 @@ window.__ModuleLoader__.load({
           setPending(kind)
           setError('')
           setNotice('')
+          setWarning('')
           try {
             return await work()
           } catch (actionError) {
@@ -338,7 +348,8 @@ window.__ModuleLoader__.load({
 
       const doBackup = () =>
         runAction('backup', async () => {
-          await request(API.backup, postJson({}))
+          const body = await request(API.backup, postJson({}))
+          if (body?.warning) setWarning(body.warning)
           startedRef.current = true
           // The POST accepted a job even if the refresh below fails, so poll
           // independently of what `status` still says.
@@ -356,6 +367,7 @@ window.__ModuleLoader__.load({
           if (picked?.canceled === true) return
           setError('')
           setNotice('')
+          setWarning('')
           await request(API.location, postJson({ path: picked?.path }))
           setNotice(t('locationDone'))
           await load()
@@ -373,7 +385,8 @@ window.__ModuleLoader__.load({
         if (!modeEnabled(mode, save)) return Promise.resolve(null)
         setConfirm(null)
         return runAction('restore', async () => {
-          await request(API.restore, postJson({ id: save.id, mode: mode.value }))
+          const body = await request(API.restore, postJson({ id: save.id, mode: mode.value }))
+          if (body?.warning) setWarning(body.warning)
           setNotice(
             t(mode.value === 'plugins' ? 'restoreStartedPlugins' : 'restoreStartedFull'),
           )
@@ -450,6 +463,16 @@ window.__ModuleLoader__.load({
             { className: 'dcb-dir-info' },
             h('span', { className: 'dcb-dir-label' }, t('pathLabel')),
             h('span', { className: 'dcb-dir-path' }, status?.backupRoot ?? ''),
+            status?.backupRootNote
+              ? h('span', { className: 'dcb-dir-note' }, status.backupRootNote)
+              : null,
+            status && status.backupRootExists === false
+              ? h(
+                  'span',
+                  { className: 'dcb-dir-note dcb-dir-note-warn' },
+                  t('folderMissing'),
+                )
+              : null,
           ),
           h(
             'div',
@@ -476,6 +499,7 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        h('p', { className: 'dcb-warn' }, t('credentialWarning')),
         polling
           ? h(
               'div',
@@ -490,6 +514,7 @@ window.__ModuleLoader__.load({
                 : null,
             )
           : null,
+        warning ? h('div', { className: 'dcb-banner dcb-banner-warn' }, warning) : null,
         error
           ? h(
               'div',

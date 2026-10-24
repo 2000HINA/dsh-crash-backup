@@ -1,18 +1,26 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { initializeBackupRoot } from '../lib/location.js'
+import { BACKUP_ROOT_MARKER, initializeBackupRoot } from '../lib/location.js'
 
 const META = { version: '0.1.0', createdAt: '2026-10-24T09:00:00.000Z' }
 
-test('initializes a new backup root', async () => {
+async function assertMissing(target) {
+  await assert.rejects(access(target))
+}
+
+test('initializes a new backup root with a producer marker', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-root-'))
   await initializeBackupRoot(root, META)
 
   assert.equal((await stat(join(root, '_pre-restore'))).isDirectory(), true)
   assert.equal((await stat(join(root, '_restore-logs'))).isDirectory(), true)
+  assert.deepEqual(JSON.parse(await readFile(join(root, BACKUP_ROOT_MARKER), 'utf8')), {
+    producer: 'dsh-crash-backup',
+    schemaVersion: 1,
+  })
 
   const readme = await readFile(join(root, 'README.txt'), 'utf8')
   assert.match(readme, /崩溃/)
@@ -29,19 +37,60 @@ test('initializes a new backup root', async () => {
   assert.equal(rawIndex.trim(), '{"saves":[]}')
 })
 
-test('keeps an existing index but refreshes settings on a second run', async () => {
+test('never overwrites an existing index, settings or readme on a second run', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-root-'))
   await initializeBackupRoot(root, META)
 
   const saves = [{ id: 'dsh-save-20261024-090000' }]
   await writeFile(join(root, 'index.json'), JSON.stringify({ saves }))
+  const firstSettings = await readFile(join(root, 'settings.json'), 'utf8')
+  const firstReadme = await readFile(join(root, 'README.txt'), 'utf8')
 
   const newer = { version: '0.2.0', createdAt: '2026-10-25T09:00:00.000Z' }
   await initializeBackupRoot(root, newer)
 
   assert.deepEqual(JSON.parse(await readFile(join(root, 'index.json'), 'utf8')), { saves })
-  assert.deepEqual(JSON.parse(await readFile(join(root, 'settings.json'), 'utf8')), {
-    ...newer,
-    backupRoot: root,
+  assert.equal(await readFile(join(root, 'settings.json'), 'utf8'), firstSettings)
+  assert.equal(await readFile(join(root, 'README.txt'), 'utf8'), firstReadme)
+  assert.deepEqual(JSON.parse(await readFile(join(root, BACKUP_ROOT_MARKER), 'utf8')), {
+    producer: 'dsh-crash-backup',
+    schemaVersion: 1,
   })
+})
+
+test('refuses a non-empty foreign folder and leaves every file untouched', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-root-'))
+  const readme = '这个目录是用户的，不是备份目录。\n'
+  const settings = '{"owner":"user","keep":true}\n'
+  await writeFile(join(root, 'README.txt'), readme)
+  await writeFile(join(root, 'settings.json'), settings)
+  await writeFile(join(root, 'index.json'), '{"saves":["mine"]}\n')
+  await writeFile(join(root, 'notes.txt'), 'do not touch\n')
+
+  await assert.rejects(initializeBackupRoot(root, META), (error) => {
+    assert.equal(error.code, 'E_NOT_OURS')
+    assert.match(error.message, /空文件夹/)
+    return true
+  })
+
+  assert.equal(await readFile(join(root, 'README.txt'), 'utf8'), readme)
+  assert.equal(await readFile(join(root, 'settings.json'), 'utf8'), settings)
+  assert.equal(await readFile(join(root, 'index.json'), 'utf8'), '{"saves":["mine"]}\n')
+  assert.equal(await readFile(join(root, 'notes.txt'), 'utf8'), 'do not touch\n')
+  // No layout, metadata or marker may be written into a foreign folder.
+  await assertMissing(join(root, BACKUP_ROOT_MARKER))
+  await assertMissing(join(root, '_pre-restore'))
+  await assertMissing(join(root, '_restore-logs'))
+})
+
+test('treats a folder with a malformed marker as foreign', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-root-'))
+  await writeFile(join(root, BACKUP_ROOT_MARKER), '{ not json')
+  await writeFile(join(root, 'README.txt'), '用户文件\n')
+
+  await assert.rejects(initializeBackupRoot(root, META), (error) => {
+    assert.equal(error.code, 'E_NOT_OURS')
+    return true
+  })
+  assert.equal(await readFile(join(root, 'README.txt'), 'utf8'), '用户文件\n')
 })

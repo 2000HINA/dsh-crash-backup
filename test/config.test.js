@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   detectInstallDir,
   detectHome,
   defaultBackupRoot,
+  longPathsWarning,
   resolveSettings,
 } from '../lib/config.js'
 import { MAX_SAVES } from '../lib/constants.js'
@@ -36,6 +37,8 @@ test('resolveSettings derives home, profile and the default backup root', () => 
     execPath: 'C:\\tool\\dsh\\DeepSeek Harness.exe',
     env: {},
     homedir: 'C:\\Users\\a',
+    // Path arithmetic only: do not probe the machine's real default folder.
+    isWritable: () => true,
   })
   assert.deepEqual(settings, {
     installDir: 'C:\\tool\\dsh',
@@ -44,6 +47,7 @@ test('resolveSettings derives home, profile and the default backup root', () => 
     profileDir: 'C:\\Users\\a\\.dsh\\profiles\\desktop',
     backupRoot: 'C:\\tool\\dsh-backups',
     backupRootSource: 'default',
+    backupRootNote: '',
     maxSaves: MAX_SAVES,
   })
 })
@@ -54,6 +58,7 @@ test('resolveSettings honours backupRoot and profile overrides as absolute paths
     execPath: 'C:\\tool\\dsh\\DeepSeek Harness.exe',
     env: { DSH_HOME: 'D:\\dsh-home' },
     homedir: 'C:\\Users\\a',
+    isWritable: () => false,
   })
   assert.equal(settings.installDir, 'C:\\tool\\dsh')
   assert.equal(settings.home, 'D:\\dsh-home')
@@ -61,6 +66,7 @@ test('resolveSettings honours backupRoot and profile overrides as absolute paths
   assert.equal(settings.profileDir, 'D:\\dsh-home\\profiles\\work')
   assert.equal(settings.backupRoot, 'E:\\backups')
   assert.equal(settings.backupRootSource, 'override')
+  assert.equal(settings.backupRootNote, '')
   assert.equal(settings.maxSaves, MAX_SAVES)
 })
 
@@ -89,4 +95,52 @@ test('an explicit config.backupRoot still wins over the saved one', async () => 
   })
   assert.equal(settings.backupRoot, 'F:\\chosen')
   assert.equal(settings.backupRootSource, 'override')
+})
+
+test('a writable default root stays the default and carries no note', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-config-'))
+  const settings = resolveSettings({
+    config: {},
+    execPath: join(root, 'dsh', 'DeepSeek Harness.exe'),
+    env: { DSH_HOME: join(root, 'home') },
+    homedir: 'C:\\Users\\a',
+  })
+  assert.equal(settings.backupRoot, join(root, 'dsh-backups'))
+  assert.equal(settings.backupRootSource, 'default')
+  assert.equal(settings.backupRootNote, '')
+})
+
+test('an unwritable default root falls back to the backup folder under home', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-config-'))
+  const home = join(root, 'home')
+  // A file where the default root belongs makes the default root unwritable.
+  await writeFile(join(root, 'dsh-backups'), 'not a directory')
+
+  const settings = resolveSettings({
+    config: {},
+    execPath: join(root, 'dsh', 'DeepSeek Harness.exe'),
+    env: { DSH_HOME: home },
+    homedir: 'C:\\Users\\a',
+  })
+
+  assert.equal(settings.backupRoot, join(home, 'dsh-backups'))
+  assert.equal(settings.backupRootSource, 'fallback')
+  assert.match(settings.backupRootNote, /无法写入默认备份目录/)
+  assert.ok(settings.backupRootNote.includes(join(root, 'dsh-backups')))
+  assert.ok(settings.backupRootNote.includes(join(home, 'dsh-backups')))
+})
+
+test('long-path warning is returned only for a disabled registry value', () => {
+  assert.match(longPathsWarning(() => 0), /LongPathsEnabled/)
+  assert.match(longPathsWarning(() => '0'), /LongPathsEnabled/)
+  assert.equal(longPathsWarning(() => 1), '')
+  assert.equal(longPathsWarning(() => null), '')
+  assert.equal(longPathsWarning(() => undefined), '')
+  assert.equal(
+    longPathsWarning(() => {
+      throw new Error('registry unavailable')
+    }),
+    '',
+    'an unreadable registry must not fail backup or restore',
+  )
 })

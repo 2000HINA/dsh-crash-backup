@@ -91,11 +91,11 @@ Copy-Item -Path 'C:\tool\dsh-crash-backup\*' -Destination $dest -Recurse -Force
 3. 等待进度条依次经过：准备备份 → 检查环境 → 压缩安装目录与插件 → 写入回退脚本 → 完成。备份期间可以继续使用 DSH，但不要关闭进程。
 4. 完成后出现存档卡片，显示创建时间、DSH 版本、插件数量、大小和存档 id。
 
-默认最多保留 **3 份**存档；达到上限后先删除一份旧存档，再备份。备份根目录可以在页面里用「更改目录」修改，不能选磁盘根目录、DSH 安装目录、profile 目录或 `%USERPROFILE%\.dsh` 内部。
+默认最多保留 **3 份**存档；达到上限后先删除一份旧存档，再备份。备份根目录可以在页面里用「更改目录」修改，不能选磁盘根目录、DSH 安装目录、profile 目录或 DSH home 内部（自动回退目录 `%DSH_HOME%\dsh-backups` 除外）；所选文件夹必须是空文件夹，或已经是本插件的备份目录，否则会被拒绝以免覆盖其中的文件。
 
 ## 崩溃后回档
 
-1. 打开备份根目录。默认是 DSH 安装目录**同级**的 `dsh-backups`：DSH 装在 `C:\tool\dsh` 时就是 `C:\tool\dsh-backups`。也可以在设置页「存档」查看实际路径并点「打开文件夹」。
+1. 打开备份根目录。默认是 DSH 安装目录**同级**的 `dsh-backups`：DSH 装在 `C:\tool\dsh` 时就是 `C:\tool\dsh-backups`；默认目录不可写时会回退到 `%DSH_HOME%\dsh-backups`。也可以在设置页「存档」查看实际路径并点「打开文件夹」。
 2. 进入要回档的 `dsh-save-*` 文件夹（按时间选最新的，或选崩溃前的那份）。
 3. 双击 `RESTORE.cmd`。
 4. 脚本先显示存档信息，然后让你选择回档方式：输入 `1` 是完整回档，输入 `2` 是仅回滚插件（两种模式的差别见下一节）。
@@ -139,7 +139,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode plugins
 %USERPROFILE%\.dsh\dsh-crash-backup\settings.json    # 只含 {"backupRoot": "..."}
 ```
 
-`DSH_HOME` 非默认时，这个文件在 `%DSH_HOME%\dsh-crash-backup\settings.json`。存档本身放在选定的备份目录，默认是 `C:\tool\dsh-backups`：
+`DSH_HOME` 非默认时，这个文件在 `%DSH_HOME%\dsh-crash-backup\settings.json`。存档本身放在选定的备份目录，默认是 `C:\tool\dsh-backups`；默认目录不可写时会自动回退到 `%DSH_HOME%\dsh-backups`，设置页会说明回退原因。
 
 ```text
 C:\tool\dsh-backups\
@@ -150,8 +150,10 @@ C:\tool\dsh-backups\
 ├─ _pre-restore\<时间戳>\             # 每次回档前的当前配置快照
 ├─ _restore-logs\restore-*.log       # 回档日志
 ├─ _restore-tmp\                     # 回档解压临时目录，成功后自动清理
+├─ _restore-in-progress.json         # 回档脚本运行期间的占用标记，结束自动删除
 ├─ index.json                        # 存档索引（可重建的缓存）
 ├─ settings.json                     # 备份目录自身的元数据，不是插件设置
+├─ .dsh-crash-backup.json            # 本插件的备份目录标记，请勿删除
 └─ README.txt                        # 备份目录说明
 ```
 
@@ -198,6 +200,7 @@ C:\tool\dsh-backups\
 | 双击 `RESTORE.cmd` 窗口一闪而过 | 在存档目录打开 PowerShell 手动运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode full`，查看完整报错和 `_restore-logs` 最新日志 |
 | 压缩包损坏或无法读取 | 脚本会在修改任何目标之前中止。换一个存档；检查磁盘错误和杀毒软件隔离记录；不要尝试强行恢复损坏的包 |
 | 磁盘空间不足 | 备份盘至少保留 2 GB；回档需要压缩包 ×3 + 512 MB 的临时空间。清理磁盘，或在设置页把备份目录换到空间更大的卷 |
+| 提示长路径未启用 | 备份/回档只提示不中止。把 `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` 设为 `1` 并重启 Windows，可避免深层目录因路径过长失败 |
 | 杀毒软件拦截 `RESTORE.ps1` / `RESTORE.cmd` | 把备份目录和 DSH 安装目录加入安全软件排除项，或在安全软件允许后手动运行；不要为此关闭实时防护 |
 | 备份卡住或留下 `.partial` 目录 | 文件可能被杀毒软件/索引服务占用；稍后重试。超过 30 分钟的 `.partial` 会在下次备份前自动清理，也可关闭 DSH 后手动删除 |
 | 回档后插件消失 | 存档创建于插件安装之前，profile 被存档覆盖。按上面的安装步骤重新安装 `dsh-crash-backup` |

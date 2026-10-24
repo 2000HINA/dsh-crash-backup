@@ -14,3 +14,11 @@
 - **回档保护**：安装目录和插件 profile 使用 `robocopy /MIR` 恢复，用户目录和运行库只覆盖不删除；恢复 profile 时排除本插件自身，并按存档清单重建 `link:` 依赖的目录链接。
 - **两种回档模式**：设置页「回档」弹窗可选「完整回档」或「仅回滚插件」，双击 `RESTORE.cmd` 也会先给出 1/2 菜单。仅回滚插件只恢复当前插件 profile（`package.json`、`pnpm-lock.yaml`、`cordis.patch.yml` 与 `node_modules`），DSH 安装目录、用户数据、`dsh-runtimes` 与插件数据（`storages` 等）都不回退；DSH 版本不一致时打印兼容性警告后继续，完成后同样需要重启 DSH。存档没有插件内容（`hasProfile: false`）时，设置页禁用该选项并说明原因，接口与脚本也会拒绝执行。
 - **与旧存档共存**：只把「`dsh-save-*` 文件夹内含一个 `.zip`」的目录识别为存档，旧插件的 `payload` 格式不会出现在新列表中；文档要求同时启用时先禁用旧插件 `dsh-save-slots`，并提醒先把旧存档移出共用备份根。
+
+### Fixed
+
+- **不再破坏外部文件**：备份目录初始化会写入 `.dsh-crash-backup.json` 标记；非空且没有该标记的文件夹会被拒绝（接口返回 400），README/settings/index 只在新目录中创建，已存在的文件不会被覆盖。
+- **回档范围补全**：完整回档现在也会把 `profile/others/<name>/<file>` 覆盖复制到 `<home>/profiles/<name>/`；链接目标已不存在的 junction 会记录警告并跳过，不再让整个回档失败。
+- **回档租约**：`RESTORE.ps1` 在确认前写入 `_restore-in-progress.json`、在所有退出路径删除；设置页据此保持 `busy`，不会在用户停留于 Y/N 时因 120 秒超时放行第二个备份/回档。
+- **备份目录与安全提示**：默认目录不可写时回退到 `%DSH_HOME%\dsh-backups` 并在页面说明；页面提示目录不存在、更改目录后旧存档仍保留、存档包含明文 `.credentials.yaml`；UNC 网络路径被拒绝。
+- **空间与长路径**：完整回档检查安装目录、profile、用户目录所在卷，仅插件模式只检查 profile；备份/回档开始时检查 `LongPathsEnabled`，未启用只提示不中止。

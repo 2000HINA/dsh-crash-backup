@@ -18,18 +18,19 @@ npm test
 ```
 
 ```text
-1..111
-# tests 111
+1..132
+# tests 132
 # suites 0
-# pass 111
+# pass 132
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 2201.397
+# duration_ms 2654.6982
 ```
 
-exit code `0`。12 个测试文件覆盖 `lib/*` 与 `client.js`（`api`、`archive`、`backup`、`client`、`config`、`constants`、`index-file`、`location`、`manifest`、`restore`、`scripts`、`settings`）。
+exit code `0`。13 个测试文件覆盖 `lib/*` 与 `client.js`（`api`、`archive`、`backup`、`client`、`config`、`constants`、`index-file`、`location`、`manifest`、`restore`、`restore-e2e`、`scripts`、`settings`）。
+最终评审修复后新增了 `test/restore-e2e.test.js`（真实生成 `RESTORE.ps1` 并运行取消/损坏 zip 两条路径），并删除了已无生产调用方的 `extractProfile`、`snapshotProfile` 及其单元测试。`restore-e2e` 在缺少 Windows PowerShell 或 `tar.exe` 的机器上自动跳过。
 
 ### 1.2 语法检查
 
@@ -49,12 +50,12 @@ node --check client.js
 npm pack --dry-run --json
 ```
 
-结果：exit `0`；`entryCount` **21**；`filename` `dsh-crash-backup-0.1.0.tgz`；`size` 49,856 B；`unpackedSize` 160,467 B。
-文件：`CHANGELOG.md`、`README.md`、`client.js`、`cordis.patch.yml`、`icon.svg`、`index.js`、`lib/` 下 12 个 `.js`、`locale/en.json`、`locale/zh.json`、`package.json`（合计 21）。dry-run 不生成 tarball；临时输出文件已删除。
+结果：exit `0`；`entryCount` **21**；`filename` `dsh-crash-backup-0.1.0.tgz`；`size` 55,504 B；`unpackedSize` 179,444 B。
+文件：`CHANGELOG.md`、`README.md`、`client.js`、`cordis.patch.yml`、`icon.svg`、`index.js`、`lib/` 下 12 个 `.js`、`locale/en.json`、`locale/zh.json`、`package.json`（合计 21）。`test/` 仍被 `files` 排除，新增的 `test/restore-e2e.test.js` 不进入发布包。dry-run 不生成 tarball；临时输出文件已删除。
 
 ### 1.4 临时目录集成验证（非破坏性）
 
-目的：在没有真实 DSH、没有风险的前提下，用真实 `createBackup` 产出一份真存档，验证存档形状、BOM、zip 内容、`listSaves`、脚本可解析，以及本机 ACP（936）下中文文件名能否穿过 `listArchive` / `extractProfile`（ACP 解码是这台机器上最容易出问题的环节）。
+目的：在没有真实 DSH、没有风险的前提下，用真实 `createBackup` 产出一份真存档，验证存档形状、BOM、zip 内容、`listSaves`、脚本可解析，以及本机 ACP（936）下中文文件名能否穿过 `listArchive`（当时还包含随后被移除的 `extractProfile`；ACP 解码是这台机器上最容易出问题的环节）。
 
 注意：中文名结论只在系统 ANSI 代码页 **936（GBK）** 下成立。`archive.js` 按注册表 ACP 选择解码器，932（日文）、949（韩文）、65001（UTF-8）等代码页未实测，不能把这里的通过外推到其它代码页机器。
 
@@ -92,7 +93,7 @@ SUMMARY {"saveId":"dsh-save-20261024-224609","folderNames":["RESTORE.cmd","RESTO
 | zip | 5,664 B / 24 个条目；含 `manifest.json`、`install/version`、`profile/desktop/package.json`；`install/version` 内容为 `0.1.0-it` |
 | 中文文件名（`listArchive`） | 保留 `profile/desktop/插件说明-中文.txt`、`profile/desktop/中文子目录/二级文件.txt`（另有目录条目 `profile/desktop/中文子目录/`）；条目名中无 `U+FFFD` 替换字符 |
 | 中文内容 | `readArchiveEntry` 读回的文本与写入内容完全一致 |
-| `extractProfile` | 解出 `profile/desktop/*`（含中文文件与中文目录）和 `manifest.json`；中文名、两级文件内容、`package.json` 依赖均正确；**未**解出 `install/`（只含插件载荷） |
+| `extractProfile`（该 helper 已在最终评审后移除） | 解出 `profile/desktop/*`（含中文文件与中文目录）和 `manifest.json`；中文名、两级文件内容、`package.json` 依赖均正确；**未**解出 `install/`（只含插件载荷）。此行为记录的是修复前那次运行，helper 已删除，回档逻辑只保留在 `RESTORE.ps1` 内 |
 | `listSaves` | 1 份；`id` 一致、`hasProfile: true`、`pluginCount: 2`、`dshVersion: 0.1.0-it`、`sizeBytes: 1158`、`restorable: true` |
 | `manifest.json` | `id`、`producer`、`contents.hasInstall/hasProfile/hasHome`、`links` 为数组，均正确 |
 | 进度回调 | `checking:1 -> archive:10 -> scripts:90 -> done:100` |
@@ -127,7 +128,7 @@ exit `0`：存档文件夹与整个临时根目录均已删除，`listSaves` 回
 
 ### 1.5 未触碰真实环境
 
-- 上述所有路径都指向 `%TEMP%` 下的假环境；**没有执行任何 `RESTORE.ps1` / `RESTORE.cmd`**。
+- 上述所有路径都指向 `%TEMP%` 下的假环境。最终评审修复后新增的 `test/restore-e2e.test.js` 会真实执行一次生成的 `RESTORE.ps1`，但只使用 `%TEMP%` 下的假 install/home/profile，且只走「取消」与「损坏 zip」两条不会写入恢复目标的路径；真实安装目录的 `RESTORE.ps1` / `RESTORE.cmd` 仍未执行。
 - 真实安装目录 `C:\tool\dsh`、真实 home `%USERPROFILE%\.dsh` 未被写入，也未被当作备份源读取。
 - 真实备份根 `C:\tool\dsh-backups` 只做了只读列举：验证前后均为 5 个条目（2 份旧格式 `dsh-save-*`、`_pre-restore`、`_restore-logs`、`README.md`），无新增、删除或改写。
 - 写文档前工作树干净；`npm pack --dry-run` 的临时 JSON 已删除。
@@ -145,7 +146,7 @@ exit `0`：存档文件夹与整个临时根目录均已删除，`listSaves` 回
 | G | 路径矩阵（Step 4：中文/空格/非系统盘路径各备份与回档） | 需要对真实备份根和真实安装目录反复写入；本会话只在 `%TEMP%` 的假环境验证过中文路径 |
 | H | 异常路径（Step 5：损坏 zip、空间不足、锁定文件、缺 profile） | 需要构造损坏存档、文件锁或磁盘写满；其中写入阶段失败可能留下部分恢复，不能在 agent 会话内执行 |
 
-> 对以上 A–H，本会话只能做到：结构级单元测试（1.1）+ 真实 `createBackup` / `extractProfile` / `listSaves` 的临时环境集成（1.4）。它们不能替代真实 DSH 进程内的行为。
+> 对以上 A–H，本会话只能做到：结构级单元测试（1.1）+ 真实 `createBackup` / `listSaves` 的临时环境集成（1.4；当时还执行过随后被移除的 `extractProfile`）。它们不能替代真实 DSH 进程内的行为。
 
 ## 3. 手动验收清单（维护者在本机执行）
 
@@ -231,12 +232,12 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 - [ ] 配置类回退：从 `_pre-restore\<时间戳>` 复制回 `home\`、`profile\` 的 5 个文件后重启 DSH。
 - [ ] 注意：`_pre-restore` 只有上述 5 个配置文件，**不含安装目录、`node_modules` 或 `AGENTS.md`**，不能用来撤销这三处的覆盖；安装目录或 `node_modules` 出错只能改用另一份存档回档或重装 DSH。
 
-回档锁过期（可选，不需要真的完成回档；全程在 DSH 运行时做）：
+回档租约（可选，不需要真的完成回档；全程在 DSH 运行时做）：
 
 1. [ ] 对一个有 profile 的存档点「回滚」→ 选「仅回滚插件」→「确认回滚」。
-2. [ ] 脚本窗口显示信息与说明后，在「是否继续？」提示处输入 `N`（脚本取消退出，DSH 不关闭）。
-3. [ ] 立即回到设置页：备份/回档/删除按钮因 `busy` 被禁用；DSH 页面的 `GET /dsh-crash-backup/api/status` 应返回 `"busy": true`。
-4. [ ] 保持设置页打开并等待超过 120 秒（`RESTORE_LOCK_MS`）：页面会自动轮询，`busy` 变为 `false` 后可以再次发起备份；`_restore-logs` 中能看到这次取消的日志。
+2. [ ] 脚本窗口显示信息与说明后停在「是否继续？」提示，先不要输入：检查备份目录出现 `_restore-in-progress.json`，且设置页 `GET /dsh-crash-backup/api/status` 返回 `"busy": true`（备份/回档/删除按钮禁用）。
+3. [ ] 在该窗口输入 `N`（脚本取消并停在「按任意键退出」）；关闭窗口后确认 `_restore-in-progress.json` 已消失。
+4. [ ] 回到设置页（轮询间隔 1.2 秒）：`busy` 变为 `false` 后可以再次发起备份；`_restore-logs` 中能看到这次取消的日志。取消后不再需要等待 120 秒。
 
 ### 3.3 C：真实仅插件回档闭环
 
@@ -286,8 +287,8 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 
 1. [ ] 点「更改目录」→ 出现系统文件夹选择器，说明文字为「选择用于保存 DSH 备份的文件夹」，初始位置是当前备份目录，有「新建文件夹」按钮。
 2. [ ] 按 Esc / 取消 → 页面路径不变，无错误横幅；按钮恢复可用（不残留「选择目录…」）。
-3. [ ] 选择一个合法新目录 → 路径更新；`%USERPROFILE%\.dsh\dsh-crash-backup\settings.json` 写入新路径；新目录生成 `README.txt`、`settings.json`、`index.json`、`_pre-restore`、`_restore-logs`。
-4. [ ] 依次尝试非法目录：磁盘根、`$install` 内、`$profile` 内、`$DshHome` 内 → 均被拒绝并显示具体原因（如「备份目录不能位于 DSH 安装目录内，回档时该位置会被镜像删除」），页面保持原路径。
+3. [ ] 选择一个合法新目录 → 路径更新，并提示「旧目录中的存档仍然保留，不会被移动或删除」；`%USERPROFILE%\.dsh\dsh-crash-backup\settings.json` 写入新路径；新目录生成 `README.txt`、`settings.json`、`index.json`、`.dsh-crash-backup.json`、`_pre-restore`、`_restore-logs`。
+4. [ ] 依次尝试非法目录：磁盘根、`$install` 内、`$profile` 内、`$DshHome` 内（`$DshHome\dsh-backups` 回退目录除外）、UNC 网络路径 `\\server\share`、含有其它文件的非空目录 → 均被拒绝并显示具体原因（如「备份目录不能位于 DSH 安装目录内，回档时该位置会被镜像删除」「所选文件夹不是空的…请选择一个空文件夹」），页面保持原路径且不覆盖其中的文件。
 5. [ ] 点「回滚」→ 弹窗标题「回滚到这个存档？」、正文、`回档范围` 两项（完整回档 / 仅回滚插件）默认选中完整回档；有 profile 的存档两项都可选。
 6. [ ] 对 `hasProfile: false` 的存档（若有）：plugins 行置灰且**不能被选中**，描述显示「该存档缺少插件内容，无法仅回滚插件。」；因为默认选中完整回档，确认按钮保持可用（禁用项本身选不中，所以不会出现“选中该项后确认按钮禁用”的可见状态）。
 7. [ ] 点「取消」或 Esc 或点遮罩 → 弹窗关闭，没有新控制台窗口、`_restore-logs` 无新日志。
@@ -388,7 +389,7 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 | --- | --- | --- | --- | --- | --- |
 | A 真实挂载 |  |  |  |  |  |
 | B 完整回档 |  |  |  |  |  |
-| B 回档锁过期 |  |  |  |  |  |
+| B 回档租约 |  |  |  |  |  |
 | C 仅插件回档 |  |  |  |  |  |
 | D 弹窗/选择器 |  |  |  |  |  |
 | D 上限行为 |  |  |  |  |  |
@@ -401,14 +402,14 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 
 ## 4. 已知限制（来自前序评审，不阻塞本次验收）
 
-1. **JS helper 与内联 `RESTORE.ps1` 是两套逻辑**：在这三个 helper 中，1.4 只实际执行了 `lib/archive.js` 的 `extractProfile`（在临时环境解出 profile）；`lib/backup.js` 的 `snapshotProfile` 只有单元测试，生产代码没有调用它（`_pre-restore` 由 `RESTORE.ps1` 内联实现）；`assertModeSupported` 是活代码，由 `lib/api.js` 的 `startRestore` 在启动脚本前调用，不是死代码。`RESTORE.ps1` 把 `extractProfile` 和 `snapshotProfile` 的逻辑各内联复制了一份，今后需与 JS 同步修改。本次只验证了 JS 路径（1.4）与 PS1 的语法可解析（1.4），没有在真实环境验证 PS1 的仅插件分支（3.3）。
-2. **回档锁的过期窗口**：`lib/api.js` 的 `RESTORE_LOCK_MS = 120000`。设置页启动回档后 `busy` 会保持 120 秒，期间不能备份/删除/再次回档；120 秒后锁自动释放（无论脚本是否仍在运行）。正常完整回档会关闭 DSH，不受影响。真实行为需按 3.2 的「回档锁过期」步骤，在脚本确认处取消并等待 120 秒验证（不是 3.3）；必要时可用配置项 `restoreLockMs` 延长。
+1. **遗留 JS helper 已清理**：`lib/archive.js` 的 `extractProfile` 与 `lib/backup.js` 的 `snapshotProfile` 在生产代码中没有调用方（其逻辑内联在 `RESTORE.ps1` 里），最终评审修复时已删除这两个 helper 及其单元测试。`assertModeSupported` 是活代码，由 `lib/api.js` 的 `startRestore` 在启动脚本前调用，仍然保留。今后修改回档逻辑只需同步 `RESTORE.ps1` 模板。
+2. **回档锁与租约**：设置页启动回档后，`RESTORE.ps1` 在确认前写入 `<backupRoot>\_restore-in-progress.json`，并在所有退出路径（成功、取消、失败）删除。`status()` 只要看到这个文件就返回 `busy`，所以用户停在 Y/N 提示时不会在 120 秒后误放行第二个备份/回档；取消后脚本退出、租约删除，下一次轮询即恢复空闲。`RESTORE_LOCK_MS = 120000` 的进程内定时器仍保留，作为没有租约时的兜底（可用配置项 `restoreLockMs` 调整）。若脚本被强制结束而来不及删除租约，设置页会保持 `busy`，需要手动删除该文件后重试。真实行为按 3.2 的「回档租约」步骤验证（不是 3.3）。
 3. **每份存档约 1 GB**：回档还需要约 zip × 3 + 512 MB 的临时空间（解压到 `<backupRoot>\_restore-tmp\<id>`）。本次集成用的是几 KB 的假环境；**大文件 IO/耗时属于 3.2 的真实备份与回档**，**磁盘在复制中途写满未验证**（3.6 的写入阶段异常只列了测试方法；启动前的空间预检不等价于复制中途写满）。
 4. **存档上限 3 份**（`MAX_SAVES = 3`）：`GET /dsh-crash-backup/api/status` 返回 `maxSaves`。达到上限时设置页把「备份当前环境」禁用（计数显示 `3/3`），**不会弹出提示**；`POST /dsh-crash-backup/api/backup` 才返回 409「备份数量已达上限（最多 3 份存档），请先删除旧存档后再备份」，该文案只在绕过 UI 的请求中出现。计数只含「恰好一个 zip」的新格式存档。上限行为需按 3.4 第 10 步实测。
 5. 其它同批评审遗留（记录备查）：确认弹窗正文写的是运行 `RESTORE.cmd`，Host 实际启动 `RESTORE.ps1`（功能一致，文案待统一）；`hasProfile` 依赖 `index.json` 摘要，早期缺少该字段的旧索引会让「仅回滚插件」置灰，需删除索引触发重建；**设置页的完整回档描述**（`modeFullDesc`）只写「恢复 DSH 安装目录、插件与用户配置」，未提 `dsh-runtimes`，而 README 的两种模式表已列出 `dsh-runtimes`；脚本实际会覆盖恢复 `dsh-runtimes`。
 
 ## 5. 结论
 
-- 自动化部分：`npm test` 111/111 通过，14 个入口/模块语法检查通过，打包清单 21 个文件；临时目录集成 34/34 断言通过，含 BOM、zip 结构、PS1 解析、中文名与内容往返（仅 ACP 936）、`listSaves`、`deleteSave` 清理。
+- 自动化部分：`npm test` 132/132 通过（13 个测试文件），14 个入口/模块语法检查通过，打包清单 21 个文件；临时目录集成 34/34 断言通过，含 BOM、zip 结构、PS1 解析、中文名与内容往返（仅 ACP 936）、`listSaves`、`deleteSave` 清理。新增的 `test/restore-e2e.test.js` 会真实运行生成的 `RESTORE.ps1`：取消路径 exit 0 且不改动任何目标，损坏 zip 非零退出并给出可读消息。
 - 真实环境部分：**未执行**，原因见第 2 节（A–H）；请按第 3 节逐项手动验收并填写 3.7。在这些手动项完成前，本任务只能算「自动化可执行部分验收通过」，不能宣称真实回档闭环已验收。
-- 本次修订后再执行 `npm test`：`# tests 111 / # pass 111 / # fail 0`（exit `0`），文档改动不影响测试。
+- 本次修订后再执行 `npm test`：`# tests 132 / # pass 132 / # fail 0`（exit `0`），文档改动不影响测试。

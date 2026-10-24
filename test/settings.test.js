@@ -36,6 +36,16 @@ test('rejects the drive root', () => {
   assert.equal(validateBackupDir('C:\\', env).code, 'drive-root')
 })
 
+test('rejects UNC network paths as not local', () => {
+  for (const candidate of ['\\\\server\\share\\backups', '//server/share/backups']) {
+    const result = validateBackupDir(candidate, env)
+    assert.equal(result.ok, false, `${candidate} must be rejected`)
+    assert.equal(result.code, 'unc')
+    assert.match(result.message, /本地/)
+    assert.match(result.message, /UNC/)
+  }
+})
+
 test('rejects an empty candidate', () => {
   assert.equal(validateBackupDir('   ', env).code, 'empty')
   assert.equal(validateBackupDir(undefined, env).code, 'empty')

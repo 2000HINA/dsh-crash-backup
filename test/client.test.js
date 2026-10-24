@@ -370,6 +370,103 @@ test('the dictionaries name both restore modes', () => {
   assert.ok(dicts.en.modePlugins.length > 0)
 })
 
+test('the settings copy warns about credentials and keeps the old saves', () => {
+  const { ctx, dictionaries } = createFakeCtx()
+  loaded[0].factory(() => fakeReact()).apply(ctx)
+  const dicts = dictionaries[0].dicts
+
+  assert.ok(dicts.zh.credentialWarning.includes('.credentials.yaml'))
+  assert.match(dicts.zh.credentialWarning, /请勿|不要/)
+  assert.ok(dicts.en.credentialWarning.includes('.credentials.yaml'))
+  assert.match(dicts.en.credentialWarning, /share|upload/)
+  assert.match(dicts.zh.locationDone, /旧目录/)
+  assert.match(dicts.zh.locationDone, /存档/)
+  assert.match(dicts.en.locationDone, /old folder/)
+})
+
+test('a fallback note, a missing folder and the credential warning are rendered', async (t) => {
+  const ui = await mountSection(t, () =>
+    jsonResponse({
+      ...statusWith(null),
+      backupRootSource: 'fallback',
+      backupRootNote: '默认目录不可写，已回退',
+      backupRootExists: false,
+    }),
+  )
+
+  assert.ok(
+    ui.harness.nodes.some((node) => node.children?.[0] === '默认目录不可写，已回退'),
+    'the fallback note from the API is shown',
+  )
+  assert.ok(
+    ui.harness.nodes.some((node) => node.children?.[0] === 'folderMissing'),
+    'a missing backup folder is called out',
+  )
+  assert.ok(
+    ui.harness.nodes.some((node) => node.children?.[0] === 'credentialWarning'),
+    'the credential warning is visible in the settings section',
+  )
+})
+
+test('a successful location change announces that the old saves are kept', async (t) => {
+  const responses = [
+    () => jsonResponse(statusWith(null)),
+    () => jsonResponse({ path: 'D:\\New Root' }),
+    () => jsonResponse({ backupRoot: 'D:\\New Root' }),
+    () => jsonResponse({ ...statusWith(null), backupRoot: 'D:\\New Root' }),
+  ]
+  const ui = await mountSection(t, (call) => responses[call - 1]())
+  const change = ui.harness.nodes.find(
+    (node) => node.type === 'button' && node.children[0] === 'changeFolder',
+  )
+  assert.ok(change, 'change-folder button is rendered')
+
+  change.props.onClick()
+  await settle()
+
+  assert.ok(
+    ui.harness.nodes.some(
+      (node) =>
+        node.props?.className?.includes('dcb-banner-ok') && node.children[0] === 'locationDone',
+    ),
+    'the success notice mentions the old folder after a location change',
+  )
+  assert.equal(
+    ui.calls.filter((call) => call.url.endsWith('/location')).length,
+    1,
+    'the picked folder is saved exactly once',
+  )
+})
+
+test('a long-path warning returned by a backup is shown in the section', async (t) => {
+  const responses = [
+    () => jsonResponse(statusWith(null)),
+    () =>
+      jsonResponse(
+        {
+          accepted: true,
+          job: { phase: 'starting', percent: 0, startedAt: 't1' },
+          warning: 'LongPathsEnabled=0',
+        },
+        202,
+      ),
+    () => jsonResponse(statusWith(null)),
+  ]
+  const ui = await mountSection(t, (call) => responses[call - 1]())
+  const backup = ui.harness.nodes.find(
+    (node) => node.type === 'button' && node.props?.className.includes('dcb-btn-primary'),
+  )
+  assert.ok(backup, 'backup button is rendered')
+
+  backup.props.onClick()
+  await settle()
+
+  assert.ok(
+    ui.harness.nodes.some((node) => node.children?.[0] === 'LongPathsEnabled=0'),
+    'the advisory warning is visible',
+  )
+})
+
 test('plugins mode is disabled with a reason when the save has no profile', async (t) => {
   const ui = await openRestoreDialog(t, { ...SAVE, hasProfile: false })
 

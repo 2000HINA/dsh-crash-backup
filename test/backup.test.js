@@ -21,7 +21,6 @@ import {
   createBackup,
   deleteSave,
   listSaves,
-  snapshotProfile,
 } from '../lib/backup.js'
 import { readIndex, writeIndex } from '../lib/index-file.js'
 
@@ -303,44 +302,17 @@ test('a backup root inside dsh home or the plugin data dir is rejected', async (
   assert.deepEqual(await listSaves(settings), [])
 })
 
-test('snapshotProfile copies only the three profile config files', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-snap-'))
-  t.after(async () => {
-    await rm(root, { recursive: true, force: true })
-  })
-  const profileDir = join(root, 'profile')
-  await mkdir(join(profileDir, 'node_modules', 'big'), { recursive: true })
-  await writeFile(join(profileDir, 'package.json'), '{"name":"desktop"}')
-  await writeFile(join(profileDir, 'pnpm-lock.yaml'), 'lockfileVersion: 9')
-  await writeFile(join(profileDir, 'cordis.patch.yml'), 'patch: true')
-  await writeFile(join(profileDir, 'node_modules', 'big', 'index.js'), 'module.exports = 1')
-  await writeFile(join(profileDir, 'notes.txt'), 'must not be copied')
+test('the documented home fallback folder is allowed as a backup root', async (t) => {
+  const { settings } = await fakeEnv(t)
+  const fallback = { ...settings, backupRoot: join(settings.home, 'dsh-backups') }
 
-  const backupRoot = join(root, 'backups')
-  const dir = await snapshotProfile({
-    profileDir,
-    backupRoot,
-    timestamp: '20261024-090000',
-  })
+  const manifest = await createBackup(fallback)
 
-  assert.equal(dir, join(backupRoot, '_pre-restore', '20261024-090000-plugins'))
-  assert.deepEqual((await readdir(dir)).sort(), [
-    'cordis.patch.yml',
-    'package.json',
-    'pnpm-lock.yaml',
-  ])
-  assert.equal(await readFile(join(dir, 'package.json'), 'utf8'), '{"name":"desktop"}')
-  assert.equal(await readFile(join(dir, 'pnpm-lock.yaml'), 'utf8'), 'lockfileVersion: 9')
-
-  // Files that are absent are simply skipped; the snapshot still exists.
-  const emptyProfile = join(root, 'empty-profile')
-  await mkdir(emptyProfile)
-  const emptyDir = await snapshotProfile({
-    profileDir: emptyProfile,
-    backupRoot,
-    timestamp: '20261024-090001',
-  })
-  assert.deepEqual(await readdir(emptyDir), [])
+  assert.ok(manifest.id.startsWith('dsh-save-'))
+  assert.deepEqual(
+    (await listSaves(fallback)).map((save) => save.id),
+    [manifest.id],
+  )
 })
 
 test('assertModeSupported requires a profile for plugin mode', () => {

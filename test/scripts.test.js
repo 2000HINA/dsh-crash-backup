@@ -11,6 +11,7 @@ import {
   renderRestorePs1,
   restoreScriptNames,
 } from '../lib/scripts.js'
+import { RESTORE_LEASE_FILE } from '../lib/restore.js'
 
 const meta = {
   id: 'dsh-save-20261024-090000',
@@ -107,7 +108,9 @@ test('plugins mode preflights the archive profile before the first write', () =>
   assert.match(preflightBlock, /throw/)
 
   // Missing profile / hasProfile=false exits 1 after Wait-AnyKey.
-  const catchBlock = ps1.slice(ps1.lastIndexOf('} catch {'))
+  const failureWait = ps1.indexOf("Wait-AnyKey '回档失败，按任意键退出...'")
+  assert.ok(failureWait > 0, 'the failure prompt is missing')
+  const catchBlock = ps1.slice(ps1.lastIndexOf('} catch {', failureWait))
   assert.ok(catchBlock.includes('Wait-AnyKey'))
   assert.ok(catchBlock.includes('exit 1'))
 })
@@ -334,6 +337,123 @@ test('backup readme explains restore, modes and credential risk', () => {
   assert.match(readme, /RESTORE\.cmd/)
   assert.match(readme, /dsh-backups/)
   assert.match(readme, /空间/)
+})
+
+test('full restore copies profile/others files over the home profiles', () => {
+  const ps1 = renderRestorePs1(meta)
+  const others = ps1.indexOf("$extractedOthers = Join-Path (Join-Path $script:TempDir 'profile') 'others'")
+  const profileRestore = ps1.indexOf('Invoke-Robocopy -Source $extractedProfile')
+
+  assert.ok(others > 0, 'the profile/others restore block is missing')
+  assert.ok(others > profileRestore, 'others must be restored after the main profile')
+  assert.ok(
+    ps1.includes("if (Test-Path -LiteralPath $extractedOthers -PathType Container) {"),
+    'a missing profile/others directory must be skipped, not fatal',
+  )
+  assert.ok(
+    ps1.includes(
+      "$otherTargetDir = Join-Path (Join-Path $HomeDir 'profiles') $otherProfileDir.Name",
+    ),
+    'others files must land in <home>/profiles/<name>',
+  )
+  assert.ok(
+    ps1.includes(
+      'Copy-Item -LiteralPath $otherFile.FullName -Destination (Join-Path $otherTargetDir $otherFile.Name) -Force',
+    ),
+    'only archived files are overwrite-copied',
+  )
+  assert.equal(ps1.includes('Invoke-Robocopy -Source $extractedOthers'), false)
+
+  // The block itself must stay inside a full-mode guard.
+  const gate = ps1.lastIndexOf(FULL_GATE, others)
+  const end = ps1.indexOf('\n    }', gate)
+  assert.ok(gate > 0 && others > gate && others < end, 'others restore must be full-mode only')
+})
+
+test('a missing junction target is warned, counted and skipped', () => {
+  const ps1 = renderRestorePs1(meta)
+  const check = ps1.indexOf('if (-not (Test-Path -LiteralPath $target)) {')
+  const skip = ps1.indexOf('continue', check)
+  const junction = ps1.indexOf('New-Item -ItemType Junction -Path', check)
+
+  assert.ok(check > 0, 'the junction target existence check is missing')
+  assert.ok(skip > check, 'a missing target must continue the loop')
+  assert.ok(junction > check, 'the check must run before creating the junction')
+  assert.ok(ps1.includes('$skippedLinks = 0'), 'the skipped-link counter must be initialized')
+  assert.match(ps1.slice(check, skip), /\$skippedLinks\+\+/)
+  assert.match(ps1.slice(check, skip), /警告/)
+  assert.equal(
+    ps1.slice(check, skip).includes('throw'),
+    false,
+    'a missing junction target must not abort the restore',
+  )
+  assert.match(ps1, /个链接因目标不存在被跳过/)
+})
+
+test('restore writes a lease before the confirmation and deletes it in finally', () => {
+  const ps1 = renderRestorePs1(meta)
+  const modeLog = ps1.indexOf("Write-Log ('回档模式：{0}' -f $Mode)")
+  const lease = ps1.indexOf(`$script:LeasePath = Join-Path $BackupRoot '${RESTORE_LEASE_FILE}'`)
+  const confirm = ps1.indexOf('$confirm = Read-Answer')
+
+  assert.ok(modeLog > 0, 'the mode selection log is missing')
+  assert.ok(lease > modeLog, 'the lease must be written after mode selection')
+  assert.ok(confirm > lease, 'the lease must exist before the Y/N confirmation')
+  assert.ok(ps1.includes('Set-Content -LiteralPath $script:LeasePath'), 'the lease is written')
+  assert.ok(ps1.includes('ConvertTo-Json -Compress'), 'the lease carries valid JSON')
+
+  const finallyAt = ps1.lastIndexOf('} finally {')
+  const cleanup = ps1.indexOf('Remove-Item -LiteralPath $script:LeasePath -Force', finallyAt)
+  assert.ok(finallyAt > 0, 'the try/finally wrapper is missing')
+  assert.ok(cleanup > finallyAt, 'the lease must be deleted in the finally block')
+  assert.ok(
+    finallyAt > ps1.indexOf("Wait-AnyKey '回档失败，按任意键退出...'"),
+    'the finally block must wrap the failure exit',
+  )
+  // Every explicit exit sits inside the try/catch the finally belongs to.
+  for (const exit of ['exit 0', 'exit 1']) {
+    assert.ok(ps1.lastIndexOf(exit) < finallyAt, `${exit} must be inside the guarded block`)
+  }
+})
+
+test('space preflight covers each restore target and skips install in plugins mode', () => {
+  const ps1 = renderRestorePs1(meta)
+  const profileTarget = ps1.indexOf("@{ Path = $ProfileDir; Label = '插件 profile 目录' }")
+  const installTarget = ps1.indexOf("$spaceTargets += @{ Path = $InstallDir; Label = '安装目录' }")
+  const homeTarget = ps1.indexOf("$spaceTargets += @{ Path = $HomeDir; Label = '用户目录' }")
+
+  assert.equal(ps1.includes('$freeInstall'), false, 'the unconditional install check is gone')
+  assert.ok(ps1.includes('$MinimumTargetBytes = [int64]268435456'))
+  assert.ok(profileTarget > 0, 'the profile target must always be checked')
+  assert.ok(installTarget > 0, 'full mode must check the install target')
+  assert.ok(homeTarget > 0, 'full mode must check the home target')
+  assert.ok(ps1.includes('if ($checkedVolumes.ContainsKey($spaceVolume)) { continue }'))
+
+  const gate = ps1.lastIndexOf(FULL_GATE, installTarget)
+  const end = ps1.indexOf('\n    }', gate)
+  assert.ok(gate > 0 && installTarget > gate && installTarget < end)
+  assert.ok(homeTarget > gate && homeTarget < end)
+  assert.ok(
+    profileTarget < gate,
+    'the profile target is added outside the full-only guard',
+  )
+})
+
+test('restore start warns when Windows long-path support is disabled', () => {
+  const ps1 = renderRestorePs1(meta)
+  const check = ps1.indexOf("$LongPathsEnabled = $null")
+  const menu = ps1.indexOf(MENU_GATE)
+
+  assert.ok(check > 0, 'the LongPathsEnabled probe is missing')
+  assert.ok(check < menu, 'long-path detection must run at restore start')
+  assert.match(
+    ps1.slice(check, ps1.indexOf("if ($LongPathsEnabled -eq 0) {", check)),
+    /Get-ItemProperty.*LongPathsEnabled/s,
+  )
+  const warn = ps1.indexOf('if ($LongPathsEnabled -eq 0) {', check)
+  const warnEnd = ps1.indexOf('\n    }', warn)
+  assert.match(ps1.slice(warn, warnEnd), /LongPathsEnabled=0/)
+  assert.equal(ps1.slice(warn, warnEnd).includes('throw'), false)
 })
 
 test(

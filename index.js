@@ -9,13 +9,13 @@ import { spawn } from 'node:child_process'
 import os from 'node:os'
 import { API_ROUTE } from './lib/constants.js'
 import { createHandlers } from './lib/api.js'
-import { resolveSettings } from './lib/config.js'
+import { longPathsWarning, resolveSettings } from './lib/config.js'
 import { createBackup, deleteSave, listSaves } from './lib/backup.js'
 import { initializeBackupRoot } from './lib/location.js'
 import { readDshVersion } from './lib/manifest.js'
 import { pickFolder } from './lib/picker.js'
-import { launchRestore } from './lib/restore.js'
-import { saveBackupRoot, validateBackupDir } from './lib/settings.js'
+import { launchRestore, restoreLeaseExists } from './lib/restore.js'
+import { isDirectory, saveBackupRoot, validateBackupDir } from './lib/settings.js'
 
 const MAX_BODY_BYTES = 4096
 
@@ -146,6 +146,9 @@ export function apply(ctx, config = {}) {
         createBackup,
         deleteSave,
         launchRestore,
+        restoreLeaseExists: (current) => restoreLeaseExists(current.backupRoot),
+        backupRootExists: (current) => isDirectory(current.backupRoot),
+        longPathsWarning: () => longPathsWarning(),
         validateBackupDir,
         initializeBackupRoot,
         saveBackupRoot,
