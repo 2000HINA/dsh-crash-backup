@@ -1,11 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listArchive } from '../lib/archive.js'
 import { cleanupOrphans, createBackup, deleteSave, listSaves } from '../lib/backup.js'
-import { readIndex } from '../lib/index-file.js'
+import { readIndex, writeIndex } from '../lib/index-file.js'
 
 async function fakeEnv(t) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-bak-'))
@@ -19,11 +29,17 @@ async function fakeEnv(t) {
   await mkdir(profileDir, { recursive: true })
   await writeFile(join(install, 'version'), '44.7.0')
   await writeFile(join(profileDir, 'package.json'), JSON.stringify({ dependencies: { a: '1.0.0' } }))
-  // One allowlisted home file, one other profile and one runtimes folder so
-  // every optional source branch is exercised.
+  // One allowlisted home file, one runtimes folder and two other profiles so
+  // every optional source branch is exercised. `dsh-tui` carries a large
+  // `node_modules` that must never be archived.
   await writeFile(join(home, 'settings.yaml'), 'theme: dark\n')
   await mkdir(join(home, 'profiles', 'headless'), { recursive: true })
   await writeFile(join(home, 'profiles', 'headless', 'package.json'), '{}')
+  const otherProfile = join(home, 'profiles', 'dsh-tui')
+  await mkdir(join(otherProfile, 'node_modules', 'big'), { recursive: true })
+  await writeFile(join(otherProfile, 'cordis.patch.yml'), 'patch: true\n')
+  await writeFile(join(otherProfile, 'package.json'), JSON.stringify({ dependencies: { tui: '1.0.0' } }))
+  await writeFile(join(otherProfile, 'node_modules', 'big', 'index.js'), 'module.exports = 1')
   await mkdir(join(home, 'dsh-runtimes', 'node'), { recursive: true })
   await writeFile(join(home, 'dsh-runtimes', 'node', 'marker.txt'), 'runtime')
   return {
@@ -68,11 +84,24 @@ test('a successful backup creates exactly zip and restore scripts', async (t) =>
     'install/version',
     `profile/${settings.profile}/package.json`,
     'profile/others/headless/package.json',
+    'profile/others/dsh-tui/cordis.patch.yml',
+    'profile/others/dsh-tui/package.json',
     'home/settings.yaml',
     'runtimes/node/marker.txt',
   ]) {
     assert.ok(entries.includes(required), `archive is missing ${required}`)
   }
+  // Other profiles contribute config files only, never node_modules.
+  assert.equal(
+    entries.some((entry) => entry.startsWith('profile/others/dsh-tui/node_modules/')),
+    false,
+    'other-profile node_modules must not be archived',
+  )
+  assert.equal(
+    entries.some((entry) => entry.endsWith('pnpm-lock.yaml')),
+    false,
+    'missing other-profile config files must be skipped',
+  )
 
   assert.deepEqual(manifest.contents, {
     hasInstall: true,
@@ -120,13 +149,68 @@ test('a fourth backup is rejected once the save limit is reached', async (t) => 
   assert.equal(names.some((name) => name.endsWith('.partial')), false)
 })
 
-test('cleanupOrphans removes stale partial and zipless save folders', async (t) => {
+test('a stale non-empty index cannot hide saves or bypass the limit', async (t) => {
   const { settings } = await fakeEnv(t)
+  const ids = []
+  for (let index = 0; index < 3; index += 1) {
+    ids.push((await createBackup(settings)).id)
+  }
+  const saves = (await readIndex(settings.backupRoot)).saves
+  assert.equal(saves.length, 3)
+
+  // Simulate a crash between publishing a save and refreshing the index: the
+  // folders are complete but the index only knows about the first save.
+  await writeIndex(settings.backupRoot, [saves[0]])
+
+  const listed = await listSaves(settings)
+  assert.equal(listed.length, 3)
+  assert.deepEqual(listed.map((save) => save.id).sort(), ids.sort())
+  assert.equal((await readIndex(settings.backupRoot)).saves.length, 3)
+
+  // The cap must count folders, not index entries, even if the index goes
+  // stale again after the reconciliation above.
+  await writeIndex(settings.backupRoot, [saves[0]])
+  await assert.rejects(
+    () => createBackup(settings),
+    (error) => {
+      assert.match(String(error?.message), /limit|最多保存/)
+      return true
+    },
+  )
+  assert.equal(
+    (await readdir(settings.backupRoot)).filter((name) => name.startsWith('dsh-save-')).length,
+    3,
+  )
+})
+
+test('a failed index update does not fail a published backup', async (t) => {
+  const { settings } = await fakeEnv(t)
+  // A directory named index.json makes every index write fail with EPERM.
+  await mkdir(settings.backupRoot, { recursive: true })
+  await mkdir(join(settings.backupRoot, 'index.json'))
+
   const manifest = await createBackup(settings)
 
-  const partial = join(settings.backupRoot, 'dsh-save-20261024-090000.partial')
-  await mkdir(join(partial, 'nested'), { recursive: true })
-  await writeFile(join(partial, 'nested', 'leftover.txt'), 'x')
+  assert.ok(manifest.id.startsWith('dsh-save-'))
+  const names = await readdir(join(settings.backupRoot, manifest.id))
+  assert.ok(names.includes(`${manifest.id}.zip`), 'the published save must survive')
+  assert.ok(names.includes('RESTORE.ps1'))
+})
+
+test('cleanupOrphans skips fresh staging and junctions, removes stale leftovers', async (t) => {
+  const { root, settings } = await fakeEnv(t)
+  const manifest = await createBackup(settings)
+
+  const stale = join(settings.backupRoot, 'dsh-save-20261024-060000.partial')
+  await mkdir(join(stale, 'nested'), { recursive: true })
+  await writeFile(join(stale, 'nested', 'leftover.txt'), 'x')
+  const old = new Date(Date.now() - 31 * 60 * 1000)
+  await utimes(stale, old, old)
+
+  const fresh = join(settings.backupRoot, 'dsh-save-20261024-090000.partial')
+  await mkdir(fresh, { recursive: true })
+  await writeFile(join(fresh, 'in-flight.txt'), 'still writing')
+
   const zipless = join(settings.backupRoot, 'dsh-save-20261024-080000')
   await mkdir(zipless, { recursive: true })
   await writeFile(join(zipless, 'notes.txt'), 'no archive here')
@@ -135,11 +219,22 @@ test('cleanupOrphans removes stale partial and zipless save folders', async (t) 
   await mkdir(unreadable, { recursive: true })
   await writeFile(join(unreadable, 'broken.zip'), 'not a zip')
 
+  // A junction named like staging must be skipped: its target is user data.
+  const linkTarget = join(root, 'junction-target')
+  await mkdir(linkTarget, { recursive: true })
+  await writeFile(join(linkTarget, 'keep.txt'), 'precious')
+  const link = join(settings.backupRoot, 'dsh-save-20261024-065959.partial')
+  await symlink(linkTarget, link, 'junction')
+
   await cleanupOrphans(settings)
 
-  await assertMissing(partial)
+  await assertMissing(stale)
   await assertMissing(zipless)
+  assert.deepEqual(await readdir(fresh), ['in-flight.txt'])
   assert.deepEqual(await readdir(unreadable), ['broken.zip'])
+  // The junction and its target are untouched.
+  assert.ok((await readFile(join(linkTarget, 'keep.txt'), 'utf8')).includes('precious'))
+  assert.ok((await readdir(link)).includes('keep.txt'))
   // The complete save is kept.
   assert.ok((await readFile(join(settings.backupRoot, manifest.id, `${manifest.id}.zip`))).length > 0)
 })
