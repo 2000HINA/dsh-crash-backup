@@ -367,16 +367,19 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 
 > 预检只能拦住能在写入前发现的错误。tar 解压只写 `<backupRoot>\_restore-tmp`；一旦进入恢复阶段，robocopy 开始镜像安装目录/profile，或开始移除、重建 junction，失败就可能留下**部分恢复**的安装目录/profile。`RESTORE.ps1` 没有回滚机制，`_pre-restore` 也不备份安装目录或 `node_modules`。`robocopy`/`tar` 在复制开始后失败时，结果都不是事务性的：`tar` 可能留下不完整的 `_restore-tmp`，`robocopy` 可能留下部分恢复的安装目录/profile，不要假设目标仍是回档前状态。恢复办法：排除失败原因后**从同一份存档重跑**（镜像是幂等的，覆盖会补齐）；若同一份存档仍失败，改用一份已知良好的存档完整回档（没有可用存档时再重装 DSH）。
 
-- [ ] 目标文件被独占（锁定一个会被 robocopy 覆盖、且不在 `_pre-restore` 快照里的文件）→ robocopy 在 `/R:1 /W:1` 重试后以 ≥8 退出，脚本打印「robocopy 失败…」并写日志；确认安装目录/profile 可能已部分改变（profile 的目录链接会在 install 镜像前先被移除）。
-  - **为什么不用 `$profile\package.json`**：`RESTORE.ps1` 在第一次 robocopy 前会先把 profile 的三个配置文件复制到 `_pre-restore`（`lib/scripts.js` 的快照阶段）；锁住 `package.json` 会让脚本在快照阶段就以「回档失败」退出，根本到不了 robocopy，测不到写入阶段的半恢复。这里锁 `$install\version`：它不在快照里，完整回档的 install 镜像会覆盖它。
+- [ ] 目标文件被独占（锁定一个 robocopy 会尝试复制、且不在 `_pre-restore` 快照里的文件）→ robocopy 在 `/R:1 /W:1` 重试后以 ≥8 退出，脚本打印并记录「回档失败：robocopy 失败（退出码 N）…」；确认安装目录/profile 可能已部分改变（profile 的目录链接会在 install 镜像前先被移除）。
+  - **为什么不用 `$profile\package.json`**：`RESTORE.ps1` 在第一次 robocopy 前会先把 profile 的三个配置文件复制到 `_pre-restore`（`lib/scripts.js` 的快照阶段）；锁住 `package.json` 会让脚本在快照阶段就以「回档失败」退出，根本到不了 robocopy，测不到写入阶段的半恢复。这里锁 `$install\version`：它不在快照里。
+  - **关键：先让目标与存档不同**：`Invoke-Robocopy` 没有传 `/IS`，robocopy 默认跳过大小和修改时间都相同的文件。如果刚跑完 3.2、`$install\version` 与存档里的内容完全一致，robocopy 会直接跳过锁住的文件，镜像成功、测试不会失败。所以先用下面的 `Set-Content` 改掉内容（大小/时间随之变化），再持锁。
   - **前置**：下面的锁命令沿用 3.0 定义的 `$install` 等变量，必须在**设置过这些变量的同一个 PowerShell 窗口**执行。新开一个窗口时 `$profile` 是 PowerShell 的自动变量（当前用户的 profile 脚本路径）、`$install` 也为空，会锁错路径或直接报错。本测试只能用**完整回档**（菜单选 `1`，或 `RESTORE.ps1 -Mode full`）；仅插件模式不写安装目录，锁 `$install\version` 不会触发 robocopy 失败。
   - **操作**：在这个持锁窗口执行：
     ```powershell
+    # 先让 $install\version 与存档不同，robocopy 才会尝试覆盖它
+    Set-Content -LiteralPath "$install\version" -Value 'lock-test' -NoNewline
     $lock = [System.IO.File]::Open("$install\version", 'Open', 'ReadWrite', 'None')
     # 保持此窗口和 $lock 不关闭，去运行 RESTORE.cmd（选 1）；看到 robocopy 失败后：
     $lock.Dispose()
     ```
-  - 失败后**不要**直接重启 DSH；先释放锁，再用同一份存档重跑一次完整回档，确认能恢复到存档状态。此测试故意制造半恢复，建议在一次性环境或最后执行。
+  - 失败后**不要**直接重启 DSH；先释放锁，再用同一份存档重跑一次完整回档，确认能恢复到存档状态（`version` 会被存档内容覆盖回来）。此测试故意制造半恢复，建议在一次性环境或最后执行。
 - [ ] 复制中途磁盘写满（可选，需可丢弃的环境；本会话未验证）：回档进行中占满备份盘或安装盘 → tar/robocopy 失败；同样可能留下不完整的临时目录或部分恢复的目标，按上面的方式重跑。启动前的空间预检见上一组，不等价于复制中途写满。
 
 ### 3.7 结果记录表
