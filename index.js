@@ -140,6 +140,7 @@ export function apply(ctx, config = {}) {
     })
     handlers = createHandlers({
       settings,
+      restoreLockMs: config.restoreLockMs,
       deps: {
         listSaves,
         createBackup,

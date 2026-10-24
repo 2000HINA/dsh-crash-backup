@@ -55,6 +55,17 @@ function makeDeps(overrides = {}) {
   return { deps, calls }
 }
 
+/** Poll `status` until the unref'd restore lock expires. */
+async function waitForIdle(handlers, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const status = await handlers.status()
+    if (!status.busy) return status
+    if (Date.now() > deadline) throw new Error('restore lock was never released')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
 test('status reports empty saves and an idle state before any backup', async () => {
   const { deps } = makeDeps()
   const handlers = createHandlers({ settings: makeSettings(), deps })
@@ -220,6 +231,7 @@ test('updateLocation rejects a path inside the install directory without persist
   assert.deepEqual(calls.saved, [])
   assert.deepEqual(calls.init, [])
   assert.equal(settings.backupRoot, 'C:\\Backups')
+  assert.equal((await handlers.status()).busy, false)
 })
 
 test('updateLocation rejects paths inside home or the plugin data directory', async () => {
@@ -322,4 +334,74 @@ test('openFolder opens the current backup root', async () => {
 
   assert.deepEqual(await handlers.openFolder(), { opened: true })
   assert.deepEqual(calls.opened, ['C:\\Backups'])
+})
+
+test('startRestore releases the lock after restoreLockMs when DSH survives', async () => {
+  const { deps } = makeDeps({ listSaves: async () => [{ id: SAVE_ID }] })
+  const handlers = createHandlers({ settings: makeSettings(), deps, restoreLockMs: 20 })
+
+  await handlers.startRestore({ id: SAVE_ID, mode: 'full' })
+  const locked = await handlers.status()
+  assert.equal(locked.busy, true)
+  assert.equal(locked.job.phase, 'restore')
+
+  const idle = await waitForIdle(handlers)
+  assert.equal(idle.busy, false)
+  assert.equal(idle.job, null)
+})
+
+test('a backup cannot start while updateLocation holds the lock', async () => {
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const { deps, calls } = makeDeps({
+    validateBackupDir: async () => {
+      await gate
+      return { ok: true }
+    },
+  })
+  const settings = makeSettings()
+  const handlers = createHandlers({ settings, deps })
+
+  const updating = handlers.updateLocation({ path: 'D:\\New Root' })
+  await assert.rejects(handlers.startBackup(), (error) => {
+    assert.equal(error.status, 409)
+    return true
+  })
+
+  release()
+  assert.deepEqual(await updating, { backupRoot: 'D:\\New Root' })
+  assert.equal(settings.backupRoot, 'D:\\New Root')
+  assert.deepEqual(calls.saved, [{ home: settings.home, target: 'D:\\New Root' }])
+  assert.equal(calls.init.length, 1)
+})
+
+test('a backup cannot start while removeSave holds the lock', async () => {
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  let saves = [{ id: SAVE_ID }]
+  const deleted = []
+  const { deps } = makeDeps({
+    listSaves: async () => saves,
+    deleteSave: async (_settings, id) => {
+      deleted.push(id)
+      await gate
+      saves = []
+    },
+  })
+  const handlers = createHandlers({ settings: makeSettings(), deps })
+
+  const deleting = handlers.removeSave({ id: SAVE_ID })
+  await assert.rejects(handlers.startBackup(), (error) => {
+    assert.equal(error.status, 409)
+    return true
+  })
+
+  release()
+  assert.deepEqual(await deleting, { saves: [] })
+  assert.deepEqual(deleted, [SAVE_ID])
+  assert.equal((await handlers.status()).busy, false)
 })
