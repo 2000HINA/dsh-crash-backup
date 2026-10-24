@@ -203,7 +203,7 @@ test('a failed index update does not fail a published backup', async (t) => {
   assert.ok(names.includes('RESTORE.ps1'))
 })
 
-test('cleanupOrphans skips fresh staging and junctions, removes stale leftovers', async (t) => {
+test('cleanupOrphans removes only stale staging, keeps fresh staging, junctions and zipless folders', async (t) => {
   const { root, settings } = await fakeEnv(t)
   const manifest = await createBackup(settings)
 
@@ -217,6 +217,8 @@ test('cleanupOrphans skips fresh staging and junctions, removes stale leftovers'
   await mkdir(fresh, { recursive: true })
   await writeFile(join(fresh, 'in-flight.txt'), 'still writing')
 
+  // A complete `dsh-save-*` folder without a zip may be an old-format save:
+  // it must survive the sweep instead of being deleted as an orphan.
   const zipless = join(settings.backupRoot, 'dsh-save-20261024-080000')
   await mkdir(zipless, { recursive: true })
   await writeFile(join(zipless, 'notes.txt'), 'no archive here')
@@ -235,7 +237,7 @@ test('cleanupOrphans skips fresh staging and junctions, removes stale leftovers'
   await cleanupOrphans(settings)
 
   await assertMissing(stale)
-  await assertMissing(zipless)
+  assert.deepEqual(await readdir(zipless), ['notes.txt'])
   assert.deepEqual(await readdir(fresh), ['in-flight.txt'])
   assert.deepEqual(await readdir(unreadable), ['broken.zip'])
   // The junction and its target are untouched.
@@ -243,6 +245,30 @@ test('cleanupOrphans skips fresh staging and junctions, removes stale leftovers'
   assert.ok((await readdir(link)).includes('keep.txt'))
   // The complete save is kept.
   assert.ok((await readFile(join(settings.backupRoot, manifest.id, `${manifest.id}.zip`))).length > 0)
+})
+
+test('a legacy payload save survives cleanupOrphans and a new backup', async (t) => {
+  const { settings } = await fakeEnv(t)
+  // Old `dsh-save-slots` format: `payload/` + `MANIFEST.json`, no zip.
+  const legacy = join(settings.backupRoot, 'dsh-save-20260101-000000')
+  await mkdir(join(legacy, 'payload'), { recursive: true })
+  await writeFile(join(legacy, 'payload', 'version'), '43.0.0')
+  await writeFile(join(legacy, 'MANIFEST.json'), JSON.stringify({ format: 'payload' }))
+
+  await cleanupOrphans(settings)
+  assert.deepEqual(
+    (await readdir(legacy)).sort(),
+    ['MANIFEST.json', 'payload'],
+    'cleanupOrphans must not delete an old-format save',
+  )
+
+  // createBackup sweeps orphans before writing: the legacy save must survive.
+  const manifest = await createBackup(settings)
+  assert.notEqual(manifest.id, 'dsh-save-20260101-000000')
+  assert.deepEqual((await readdir(legacy)).sort(), ['MANIFEST.json', 'payload'])
+  assert.equal(await readFile(join(legacy, 'payload', 'version'), 'utf8'), '43.0.0')
+  // The legacy folder is not a new-format save and must not be listed.
+  assert.deepEqual((await listSaves(settings)).map((save) => save.id), [manifest.id])
 })
 
 test('deleteSave removes the folder and its index entry', async (t) => {
