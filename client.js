@@ -71,6 +71,7 @@ window.__ModuleLoader__.load({
       locationDone: '备份目录已更新。',
       loadFailed: '读取存档列表失败：{error}',
       actionFailed: '操作失败：{error}',
+      retry: '重试',
       processing: '正在处理…',
       phaseStarting: '准备备份',
       phaseChecking: '检查环境',
@@ -117,6 +118,7 @@ window.__ModuleLoader__.load({
       locationDone: 'Backup folder updated.',
       loadFailed: 'Could not load saves: {error}',
       actionFailed: 'Action failed: {error}',
+      retry: 'Retry',
       processing: 'Working…',
       phaseStarting: 'Preparing backup',
       phaseChecking: 'Checking environment',
@@ -159,7 +161,9 @@ window.__ModuleLoader__.load({
 .dcb-card-actions { display:flex; gap:8px; flex:0 0 auto; }
 .dcb-empty { padding:28px 20px; border:1px dashed var(--dsw-alias-border-l1); border-radius:12px; color:var(--dsw-alias-label-tertiary); text-align:center; line-height:1.7; }
 .dcb-banner { padding:10px 14px; border-radius:10px; font-size:12px; line-height:1.6; }
-.dcb-banner-error { color:var(--dsw-alias-state-error-primary); background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, transparent); }
+.dcb-banner-error { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--dsw-alias-state-error-primary); background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, transparent); }
+.dcb-banner-text { min-width:0; }
+.dcb-retry { flex:0 0 auto; }
 .dcb-banner-ok { color:var(--dsw-alias-state-success-primary); background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, transparent); }
 .dcb-progress { display:flex; flex-direction:column; gap:6px; }
 .dcb-progress-label { font-size:12px; color:var(--dsw-alias-label-secondary); }
@@ -189,6 +193,8 @@ window.__ModuleLoader__.load({
       const [pending, setPending] = useState('')
       const [confirm, setConfirm] = useState(null)
       const [restoreMode, setRestoreMode] = useState('full')
+      const [retryCount, setRetryCount] = useState(0)
+      const [backupPoll, setBackupPoll] = useState(false)
       const startedRef = useRef(false)
 
       const load = useCallback(
@@ -212,6 +218,20 @@ window.__ModuleLoader__.load({
         load().catch(() => {})
       }, [load])
 
+      // A failed first read must not leave every control disabled: retry with
+      // a bounded backoff (2 s, 4 s, 8 s, then 8 s) until one read succeeds.
+      useEffect(() => {
+        if (status !== null || !error) return undefined
+        const timer = setTimeout(
+          () => {
+            setRetryCount((count) => count + 1)
+            load().catch(() => {})
+          },
+          Math.min(8000, 2000 * 2 ** retryCount),
+        )
+        return () => clearTimeout(timer)
+      }, [status, error, retryCount, load])
+
       const saves = Array.isArray(status?.saves) ? status.saves : []
       const maxSaves =
         typeof status?.maxSaves === 'number' && Number.isFinite(status.maxSaves)
@@ -222,8 +242,9 @@ window.__ModuleLoader__.load({
       const jobPhase = typeof job?.phase === 'string' ? job.phase : ''
       const activeJob = Boolean(job) && (ACTIVE_PHASES.has(jobPhase) || job?.state === 'running')
       // `busy` covers backup, restore, delete and location changes; a job
-      // marked running by a future backend keeps polling too.
-      const polling = busy || job?.state === 'running'
+      // marked running by a future backend keeps polling too. `backupPoll`
+      // keeps polling after a POST /backup whose immediate refresh failed.
+      const polling = backupPoll || busy || job?.state === 'running'
 
       useEffect(() => {
         if (!polling) return undefined
@@ -234,18 +255,21 @@ window.__ModuleLoader__.load({
       }, [polling, load])
 
       // A backup started from this page ends with `done` or `failed`; poll
-      // results update the same job object, so watch the phase.
+      // results update the same job object, so watch its phase. `startedAt`
+      // distinguishes a new job from a finished one left in `status`.
       useEffect(() => {
         if (!job || !startedRef.current) return
         if (job.phase === 'done') {
           startedRef.current = false
+          setBackupPoll(false)
           setNotice(t('backupDone'))
           setError('')
         } else if (job.phase === 'failed') {
           startedRef.current = false
+          setBackupPoll(false)
           setError(job.error || t('backupFailed'))
         }
-      }, [job?.phase, job?.error, t])
+      }, [job?.phase, job?.error, job?.startedAt, t])
 
       useEffect(() => {
         if (!notice) return undefined
@@ -279,10 +303,18 @@ window.__ModuleLoader__.load({
         [t],
       )
 
+      const doRetry = () => {
+        setRetryCount(0)
+        load().catch(() => {})
+      }
+
       const doBackup = () =>
         runAction('backup', async () => {
           await request(API.backup, postJson({}))
           startedRef.current = true
+          // The POST accepted a job even if the refresh below fails, so poll
+          // independently of what `status` still says.
+          setBackupPoll(true)
           await load()
         })
 
@@ -330,7 +362,7 @@ window.__ModuleLoader__.load({
         setConfirm({ kind: 'restore', save })
       }
 
-      const actionDisabled = busy || Boolean(pending)
+      const actionDisabled = backupPoll || busy || Boolean(pending)
       const canBackup = status !== null && saves.length < maxSaves && !actionDisabled
       const progressLabel =
         activeJob && jobPhase ? phaseLabel(t, jobPhase) : t('processing')
@@ -421,7 +453,20 @@ window.__ModuleLoader__.load({
                 : null,
             )
           : null,
-        error ? h('div', { className: 'dcb-banner dcb-banner-error' }, error) : null,
+        error
+          ? h(
+              'div',
+              { className: 'dcb-banner dcb-banner-error' },
+              h('span', { className: 'dcb-banner-text' }, error),
+              status === null
+                ? h(
+                    'button',
+                    { className: 'dcb-btn dcb-retry', type: 'button', onClick: doRetry },
+                    t('retry'),
+                  )
+                : null,
+            )
+          : null,
         notice ? h('div', { className: 'dcb-banner dcb-banner-ok' }, notice) : null,
         status === null
           ? null
