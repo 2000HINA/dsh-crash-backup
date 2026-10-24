@@ -10,6 +10,10 @@ globalThis.window = {
       loaded.push(definition)
     },
   },
+  // The confirm dialog listens for Escape through `window`; no-ops suffice for
+  // structural rendering.
+  addEventListener() {},
+  removeEventListener() {},
 }
 
 // `client.js` is a plain module-loader script, not an ES module; stub the
@@ -296,6 +300,146 @@ async function mountSection(t, respond) {
 function jsonResponse(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body }
 }
+
+const SAVE = {
+  id: 'dsh-save-20261024-090000',
+  createdAt: '2026-10-24T09:00:00.000Z',
+  dshVersion: '44.7.0',
+  pluginCount: 1,
+  sizeBytes: 1024,
+}
+
+function statusWith(save) {
+  return {
+    maxSaves: 3,
+    backupRoot: 'C:\\dsh-backups',
+    profile: 'desktop',
+    saves: save ? [save] : [],
+    busy: false,
+    job: null,
+  }
+}
+
+/** Mount the section with one save and open its restore dialog. */
+async function openRestoreDialog(t, save) {
+  const ui = await mountSection(t, (call, url) => {
+    if (url.endsWith('/status')) return jsonResponse(statusWith(save))
+    return jsonResponse({ restoring: true, id: save.id, mode: 'full' }, 202)
+  })
+  const open = ui.harness.nodes.find(
+    (node) => node.type === 'button' && node.children[0] === 'restore',
+  )
+  assert.ok(open, 'the save card has a restore button')
+  open.props.onClick()
+  await settle()
+  return ui
+}
+
+function modeRow(ui, value) {
+  const radio = ui.harness.nodes.find(
+    (node) => node.type === 'input' && node.props?.value === value,
+  )
+  assert.ok(radio, `the ${value} mode radio is rendered`)
+  const label = ui.harness.nodes.find(
+    (node) => node.type === 'label' && node.children.includes(radio),
+  )
+  assert.ok(label, `the ${value} mode row is rendered`)
+  return { radio, label }
+}
+
+function confirmButton(ui) {
+  const button = ui.harness.nodes.find(
+    (node) => node.type === 'button' && node.children[0] === 'confirmRestore',
+  )
+  assert.ok(button, 'the restore dialog has a confirm button')
+  return button
+}
+
+test('the dictionaries name both restore modes', () => {
+  const { ctx, dictionaries } = createFakeCtx()
+  loaded[0].factory(() => fakeReact()).apply(ctx)
+  const dicts = dictionaries[0].dicts
+
+  assert.equal(dicts.zh.modeFull, '完整回档')
+  assert.equal(dicts.zh.modePlugins, '仅回滚插件')
+  assert.ok(dicts.zh.modePluginsDesc.includes('插件 profile'))
+  assert.ok(dicts.zh.modePluginsUnavailable.includes('缺少插件内容'))
+  assert.equal(typeof dicts.en.modeFull, 'string')
+  assert.ok(dicts.en.modeFull.length > 0)
+  assert.equal(typeof dicts.en.modePlugins, 'string')
+  assert.ok(dicts.en.modePlugins.length > 0)
+})
+
+test('plugins mode is disabled with a reason when the save has no profile', async (t) => {
+  const ui = await openRestoreDialog(t, { ...SAVE, hasProfile: false })
+
+  const full = modeRow(ui, 'full')
+  assert.equal(full.radio.props.disabled, false, 'full restore is always available')
+  assert.equal(full.radio.props.checked, true, 'full restore is the default')
+
+  const plugins = modeRow(ui, 'plugins')
+  assert.equal(plugins.radio.props.disabled, true, 'plugins mode is disabled')
+  assert.ok(
+    plugins.label.props.className.includes('dcb-mode-disabled'),
+    'the disabled row is marked in the UI',
+  )
+  const description = plugins.label.children[1].children[1]
+  assert.equal(
+    description.children[0],
+    'modePluginsUnavailable',
+    'the disabled row shows the reason instead of the scope description',
+  )
+  assert.equal(confirmButton(ui).props.disabled, false, 'the default mode is still submittable')
+
+  // A disabled mode cannot be picked through the UI, but a stale selection must
+  // never let its restore launch either.
+  plugins.radio.props.onChange()
+  await settle()
+  assert.equal(modeRow(ui, 'plugins').radio.props.checked, true)
+  assert.equal(confirmButton(ui).props.disabled, true, 'confirm follows the selected mode')
+  confirmButton(ui).props.onClick()
+  await settle()
+  assert.equal(
+    ui.calls.filter((call) => call.url.endsWith('/restore')).length,
+    0,
+    'an unavailable mode never posts /restore',
+  )
+})
+
+test('confirm posts the selected restore mode', async (t) => {
+  const ui = await openRestoreDialog(t, { ...SAVE, hasProfile: true })
+
+  const plugins = modeRow(ui, 'plugins')
+  assert.equal(plugins.radio.props.disabled, false, 'plugins mode is available')
+  assert.equal(plugins.radio.props.checked, false)
+  assert.equal(confirmButton(ui).props.disabled, false)
+
+  plugins.radio.props.onChange()
+  await settle()
+  const selected = modeRow(ui, 'plugins')
+  assert.equal(selected.radio.props.checked, true, 'plugins becomes the selected mode')
+  assert.ok(selected.label.props.className.includes('dcb-mode-selected'))
+
+  confirmButton(ui).props.onClick()
+  await settle()
+
+  const restore = ui.calls.filter((call) => call.url.endsWith('/restore')).at(-1)
+  assert.ok(restore, 'confirm posts /restore')
+  assert.deepEqual(JSON.parse(restore.init.body), { id: SAVE.id, mode: 'plugins' })
+
+  // Reopening the dialog defaults back to a full restore.
+  const reopen = ui.harness.nodes.find(
+    (node) => node.type === 'button' && node.children[0] === 'restore',
+  )
+  reopen.props.onClick()
+  await settle()
+  assert.equal(modeRow(ui, 'full').radio.props.checked, true, 'reopening resets to full')
+  confirmButton(ui).props.onClick()
+  await settle()
+
+  const fullRestore = ui.calls.filter((call) => call.url.endsWith('/restore')).at(-1)
+  assert.deepEqual(JSON.parse(fullRestore.init.body), { id: SAVE.id, mode: 'full' })
+})
 
 test('a failed first status read renders a retry control and a 2 s backoff', async (t) => {
   const ui = await mountSection(t, () => {

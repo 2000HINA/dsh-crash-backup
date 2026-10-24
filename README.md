@@ -98,14 +98,20 @@ Copy-Item -Path 'C:\tool\dsh-crash-backup\*' -Destination $dest -Recurse -Force
 1. 打开备份根目录。默认是 DSH 安装目录**同级**的 `dsh-backups`：DSH 装在 `C:\tool\dsh` 时就是 `C:\tool\dsh-backups`。也可以在设置页「存档」查看实际路径并点「打开文件夹」。
 2. 进入要回档的 `dsh-save-*` 文件夹（按时间选最新的，或选崩溃前的那份）。
 3. 双击 `RESTORE.cmd`。
-4. 按提示输入 `Y` 确认；如果脚本检测到 DSH 仍在运行，会再问一次是否结束进程，也输入 `Y`。
-5. 等待脚本完成。成功、取消、失败三种结束都会停在窗口里，按任意键关闭。
-6. 手动重新启动 DSH。
+4. 脚本先显示存档信息，然后让你选择回档方式：输入 `1` 是完整回档，输入 `2` 是仅回滚插件（两种模式的差别见下一节）。
+5. 输入 `Y` 确认；如果脚本检测到 DSH 仍在运行，会再问一次是否结束进程，也输入 `Y`。
+6. 等待脚本完成。成功、取消、失败三种结束都会停在窗口里，按任意键关闭。
+7. 手动重新启动 DSH。
+
+设置页「存档 → 回滚」的弹窗提供同样的两种模式，选定后点「确认回滚」，脚本会带着对应的模式启动。
 
 脚本会先把当前配置快照到 `_pre-restore`，把过程写入 `_restore-logs`。也可以不双击，直接在存档目录运行：
 
 ```powershell
+# 完整回档
 powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode full
+# 仅回滚插件
+powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode plugins
 ```
 
 ## 两种回档模式
@@ -113,11 +119,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode full
 | 模式 | 恢复范围 | 对存档后新增内容的处理 |
 | --- | --- | --- |
 | **完整回档**（`-Mode full`，默认） | DSH 安装目录、当前插件 profile、用户目录白名单、`dsh-runtimes` | 安装目录和 profile 用 `robocopy /MIR` 镜像，会删除存档之后新增的文件；用户目录和运行库只覆盖，不删除 |
-| **仅回滚插件**（`-Mode plugins`，后续变更启用） | 只恢复当前插件 profile，安装目录和用户目录都不动 | profile 用镜像恢复，会删除存档之后新增的插件；插件数据（`storages` 等）不回退 |
+| **仅回滚插件**（`-Mode plugins`） | 只恢复当前插件 profile：`package.json`、`pnpm-lock.yaml`、`cordis.patch.yml` 和 `node_modules` | profile 用 `/MIR` 镜像，会删除存档之后新增的插件文件；其它内容一律不动 |
 
-两种模式共用同一套确认、回档前快照、日志、本插件自排除和 junction 重建逻辑，结束后都需要重启 DSH。
+**仅回滚插件的确切范围**（适用场景：只是插件装坏或升级出问题，想回到某个插件组合，又不想动 DSH 本身）：
 
-> 0.1.0 只启用完整回档。脚本已接受 `-Mode plugins`，但当前会提示「插件级回档尚未启用」并安全退出，不修改任何文件；仅回滚插件在后续变更（设置页选项与脚本实现）完成后可用。
+- **只改插件 profile**：`package.json`、锁文件 `pnpm-lock.yaml`、`cordis.patch.yml` 与 `node_modules` 恢复到存档状态；profile 里存档之后新增的插件会被删除。
+- **不改 DSH 安装、用户数据和运行库**：安装目录、`home/`（`cordis.patch.yml`、`settings.yaml`、`.credentials.yaml`、`skills`、`storages` 等）和 `dsh-runtimes` 都保持原样，DSH 版本也不会回退。
+- **插件数据不回退**：`storages` 等插件运行时数据不在恢复范围内，「仅回滚插件」不会把它们退回到存档时的状态。需要这些数据也回退时用完整回档。
+- **DSH 版本不一致会警告**：存档版本与当前 DSH 版本不同时，脚本打印兼容性警告后继续；回档后的插件可能无法加载，遇到问题请改用完整回档。
+- **同样需要重启**：两种模式都会先关闭 DSH，完成（或取消、失败）后都要手动重新启动 DSH。
+
+设置页的「回滚」弹窗原样提供这两种模式；存档没有插件内容（`hasProfile: false`）时，「仅回滚插件」置灰并说明原因。两种模式共用同一套确认、回档前快照、日志、本插件自排除和 junction 重建逻辑。
 
 ## 数据与目录
 
@@ -148,7 +160,7 @@ C:\tool\dsh-backups\
 ## 安全与风险
 
 - **存档里有凭据**：`home/.credentials.yaml` 会以明文进入压缩包，可能包含 API Key。不要上传、分享或同步备份目录，建议用 NTFS 权限限制访问，必要时放在 BitLocker 卷上。`_pre-restore` 里的配置也可能含敏感信息。
-- **`/MIR` 会删除文件**：完整回档会把安装目录和插件 profile 恢复到存档时的状态，存档之后新增或修改的内容都会丢失。确认要回到那一刻再执行。
+- **`/MIR` 会删除文件**：完整回档会把安装目录和插件 profile 恢复到存档时的状态，仅回滚插件同样会镜像整个插件 profile；存档之后新增或修改的内容都会丢失。确认要回到那一刻再执行。
 - **本插件会保留自己**：恢复 profile 时排除 `node_modules\dsh-crash-backup`，并用 `manifest.json` 记录的信息重建 `link:` 依赖的 junction；如果存档创建时插件还没安装，脚本会提示重新安装。
 - **只恢复自己创建的存档**：`RESTORE.ps1` 会执行恢复逻辑，不要运行来路不明的存档脚本。
 - **备份不是瞬间快照**：压缩时 DSH 仍在运行，文件可能在写入过程中变化。重要操作前先备份；备份进行中不要安装或升级插件，也不要修改设置。

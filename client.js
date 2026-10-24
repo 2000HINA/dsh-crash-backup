@@ -30,10 +30,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One-mode list today. Task 15 adds the `plugins` entry here (and its
-     * `enabled` predicate); the modal already renders it as a radio group.
+     * Restore scopes offered by the confirm dialog, in display order. A mode
+     * without an `enabled` predicate always applies; `unavailableKey` replaces
+     * the scope description with the reason a save cannot use it.
      */
-    const RESTORE_MODES = [{ value: 'full', labelKey: 'modeFull', descKey: 'modeFullDesc' }]
+    const RESTORE_MODES = [
+      { value: 'full', labelKey: 'modeFull', descKey: 'modeFullDesc' },
+      {
+        value: 'plugins',
+        labelKey: 'modePlugins',
+        descKey: 'modePluginsDesc',
+        unavailableKey: 'modePluginsUnavailable',
+        enabled: (save) => save?.hasProfile === true,
+      },
+    ]
+
+    /** Whether one save can use `mode`; a mode without a predicate always can. */
+    function modeEnabled(mode, save) {
+      return typeof mode?.enabled === 'function' ? mode.enabled(save) : true
+    }
+
+    /** The mode entry behind a stored value; unknown values fall back to the first. */
+    function modeEntry(value) {
+      return RESTORE_MODES.find((mode) => mode.value === value) ?? RESTORE_MODES[0]
+    }
 
     const zh = {
       nav: '存档',
@@ -54,17 +74,21 @@ window.__ModuleLoader__.load({
       restore: '回滚',
       delete: '删除',
       restoreConfirmTitle: '回滚到这个存档？',
-      restoreConfirmBody: '回滚会先关闭 DSH，再运行存档里的 RESTORE.cmd 恢复安装目录、插件和用户配置。未保存的内容会丢失，完成后需要手动重新启动 DSH。',
+      restoreConfirmBody: '回滚会先关闭 DSH，再按选定的范围运行存档里的 RESTORE.cmd。未保存的内容会丢失，完成后需要手动重新启动 DSH。',
       restoreModeLabel: '回档范围',
       modeFull: '完整回档',
       modeFullDesc: '恢复 DSH 安装目录、插件与用户配置。DSH 会先关闭。',
+      modePlugins: '仅回滚插件',
+      modePluginsDesc: '只恢复插件 profile（package.json、锁文件、patch 与 node_modules），不改 DSH 安装与用户数据；插件数据不回退。',
       modeUnavailable: '当前存档不支持此模式',
+      modePluginsUnavailable: '该存档缺少插件内容，无法仅回滚插件。',
       deleteConfirmTitle: '删除这个存档？',
       deleteConfirmBody: '存档文件夹（含回退脚本）会被永久删除，无法恢复。',
       cancel: '取消',
       confirmRestore: '确认回滚',
       confirmDelete: '永久删除',
-      restoreStarted: '已启动回档脚本，DSH 即将关闭。若脚本被取消，稍后可以重试。',
+      restoreStartedFull: '正在完整回档，DSH 即将关闭。完成后需要手动重新启动 DSH；若脚本被取消，稍后可以重试。',
+      restoreStartedPlugins: '正在仅回滚插件，DSH 即将关闭。完成后需要手动重新启动 DSH 以加载回档后的插件；若脚本被取消，稍后可以重试。',
       backupDone: '备份完成。',
       backupFailed: '备份失败。',
       deleteDone: '存档已删除。',
@@ -101,17 +125,21 @@ window.__ModuleLoader__.load({
       restore: 'Restore',
       delete: 'Delete',
       restoreConfirmTitle: 'Restore this save?',
-      restoreConfirmBody: 'Restoring first closes DSH, then RESTORE.cmd in the save restores the install directory, plugins and user configuration. Unsaved work is lost, and DSH must be started manually afterwards.',
+      restoreConfirmBody: 'Restoring first closes DSH, then RESTORE.cmd in the save runs with the selected scope. Unsaved work is lost, and DSH must be started manually afterwards.',
       restoreModeLabel: 'Restore scope',
       modeFull: 'Full restore',
       modeFullDesc: 'Restores the DSH install directory, plugins and user configuration. DSH is closed first.',
+      modePlugins: 'Plugins only',
+      modePluginsDesc: 'Restores only the plugin profile (package.json, lockfile, patch and node_modules). The DSH install, user data and plugin data are left untouched.',
       modeUnavailable: 'This mode is not available for this save',
+      modePluginsUnavailable: 'This save has no plugin profile, so plugins-only restore is unavailable.',
       deleteConfirmTitle: 'Delete this save?',
       deleteConfirmBody: 'The save folder, including its restore script, is permanently deleted.',
       cancel: 'Cancel',
       confirmRestore: 'Restore',
       confirmDelete: 'Delete permanently',
-      restoreStarted: 'The restore script has started and DSH is about to close. If the script is cancelled, try again later.',
+      restoreStartedFull: 'Full restore is starting and DSH is about to close. Start DSH manually afterwards. If the script is cancelled, try again later.',
+      restoreStartedPlugins: 'Plugins-only restore is starting and DSH is about to close. Start DSH manually afterwards to load the restored plugins. If the script is cancelled, try again later.',
       backupDone: 'Backup complete.',
       backupFailed: 'Backup failed.',
       deleteDone: 'Save deleted.',
@@ -339,11 +367,16 @@ window.__ModuleLoader__.load({
       }
 
       const doRestore = (save) => {
-        const mode = restoreMode
+        const mode = modeEntry(restoreMode)
+        // The confirm button is disabled for this case; the guard also stops a
+        // stale closure from launching a restore the save cannot support.
+        if (!modeEnabled(mode, save)) return Promise.resolve(null)
         setConfirm(null)
         return runAction('restore', async () => {
-          await request(API.restore, postJson({ id: save.id, mode }))
-          setNotice(t('restoreStarted'))
+          await request(API.restore, postJson({ id: save.id, mode: mode.value }))
+          setNotice(
+            t(mode.value === 'plugins' ? 'restoreStartedPlugins' : 'restoreStartedFull'),
+          )
           await load()
         })
       }
@@ -370,6 +403,10 @@ window.__ModuleLoader__.load({
         typeof job?.percent === 'number' && Number.isFinite(job.percent) ? job.percent : null
       const showBar = activeJob && percent !== null
       const width = showBar ? Math.max(0, Math.min(100, percent)) : 0
+      const restoreModeEntry = modeEntry(restoreMode)
+      // Gate the confirm button on the selected mode, not just the dialog kind:
+      // an unavailable mode must not be submittable.
+      const restoreModeAvailable = modeEnabled(restoreModeEntry, confirm?.save)
 
       return h(
         'div',
@@ -530,8 +567,7 @@ window.__ModuleLoader__.load({
                         'aria-label': t('restoreModeLabel'),
                       },
                       RESTORE_MODES.map((mode) => {
-                        const enabled =
-                          typeof mode.enabled === 'function' ? mode.enabled(confirm.save) : true
+                        const enabled = modeEnabled(mode, confirm.save)
                         const selected = restoreMode === mode.value
                         return h(
                           'label',
@@ -576,6 +612,7 @@ window.__ModuleLoader__.load({
                     {
                       className: `dcb-btn ${confirm.kind === 'restore' ? 'dcb-btn-primary' : 'dcb-btn-danger'}`,
                       type: 'button',
+                      disabled: confirm.kind === 'restore' && !restoreModeAvailable,
                       onClick: () =>
                         confirm.kind === 'restore'
                           ? doRestore(confirm.save)
