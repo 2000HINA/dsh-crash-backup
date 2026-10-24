@@ -236,7 +236,7 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 
 1. [ ] 对一个有 profile 的存档点「回滚」→ 选「仅回滚插件」→「确认回滚」。
 2. [ ] 脚本窗口显示信息与说明后停在「是否继续？」提示，先不要输入：检查备份目录出现 `_restore-in-progress.json`，且设置页 `GET /dsh-crash-backup/api/status` 返回 `"busy": true`（备份/回档/删除按钮禁用）。
-3. [ ] 在该窗口输入 `N`（脚本取消并停在「按任意键退出」）；关闭窗口后确认 `_restore-in-progress.json` 已消失。
+3. [ ] 在该窗口输入 `N`（脚本取消并停在「按任意键退出」），按任意键退出后确认 `_restore-in-progress.json` 已消失。若直接点窗口右上角 X 关闭，脚本可能来不及执行 `finally`，租约会残留；此时手动删除 `_restore-in-progress.json`，设置页才能恢复空闲。
 4. [ ] 回到设置页（轮询间隔 1.2 秒）：`busy` 变为 `false` 后可以再次发起备份；`_restore-logs` 中能看到这次取消的日志。取消后不再需要等待 120 秒。
 
 ### 3.3 C：真实仅插件回档闭环

@@ -157,6 +157,8 @@ C:\tool\dsh-backups\
 └─ README.txt                        # 备份目录说明
 ```
 
+如果回档脚本被强制结束（例如在任务管理器里结束进程），`_restore-in-progress.json` 可能残留在备份目录中，需要手动删除；在删除它之前，设置页会一直显示有任务正在进行。
+
 压缩包里包含：`install/`（DSH 安装目录）、`profile/<profile>/`（含 `node_modules`）、其它 profile 的配置文件、`home/`（用户配置白名单，存在时含 `.credentials.yaml`）、`runtimes/` 和 `manifest.json`。`sessions`、`attachments`、`cache` 不在存档里，回档也不会删除它们。
 
 ## 安全与风险

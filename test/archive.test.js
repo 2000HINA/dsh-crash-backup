@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import {
   createArchive,
   dirSize,
-  extractPrefix,
   listArchive,
   readArchiveEntry,
   sha256File,
@@ -28,9 +27,6 @@ test('keeps chinese file names inside the zip', async () => {
   const entries = await listArchive(zip)
   assert.ok(entries.some((e) => e.includes('中文 说明.txt')))
   assert.equal(JSON.parse(await readArchiveEntry(zip, 'manifest.json')).id, 't')
-  const dest = join(root, 'out')
-  await extractPrefix(zip, 'src', dest)
-  assert.deepEqual(await readdir(join(dest, 'src')), ['中文 说明.txt'])
 })
 
 test('a source name with a slash keeps its folders in the archive', async () => {
@@ -52,9 +48,6 @@ test('a source name with a slash keeps its folders in the archive', async () => 
   assert.ok(entries.includes('profile/desktop/package.json'))
   assert.ok(entries.includes('version.txt'))
 
-  const dest = join(root, 'out')
-  await extractPrefix(zip, 'profile/desktop', dest)
-  assert.deepEqual(await readdir(join(dest, 'profile', 'desktop')), ['package.json'])
   // the staging junction must be gone and the source untouched
   assert.deepEqual(await readdir(join(root, 'profile', 'desktop')), ['package.json'])
 })
@@ -78,19 +71,6 @@ test('verifyArchive names the entries an archive is missing', async () => {
     ok: false,
     missing: ['src/missing.txt'],
   })
-})
-
-test('extractPrefix rejects a prefix the archive does not contain', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-arc-'))
-  await mkdir(join(root, 'src'), { recursive: true })
-  await writeFile(join(root, 'src', 'app.txt'), 'x')
-  const zip = join(root, 'nope.zip')
-  await createArchive({
-    zipPath: zip,
-    sources: [{ name: 'src', path: join(root, 'src') }],
-    manifest: {},
-  })
-  await assert.rejects(extractPrefix(zip, 'missing', join(root, 'out')), /archive has no/)
 })
 
 test('dirSize counts nested files without following a junction', async () => {

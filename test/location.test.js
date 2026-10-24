@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { access, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BACKUP_ROOT_MARKER, initializeBackupRoot } from '../lib/location.js'
@@ -81,6 +81,40 @@ test('refuses a non-empty foreign folder and leaves every file untouched', async
   await assertMissing(join(root, BACKUP_ROOT_MARKER))
   await assertMissing(join(root, '_pre-restore'))
   await assertMissing(join(root, '_restore-logs'))
+})
+
+test('adopts a marker-less folder that only holds plugin files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-root-'))
+  const save = join(root, 'dsh-save-20260101-120000')
+  await mkdir(save)
+  await writeFile(join(save, 'dsh-save-20260101-120000.zip'), 'zip')
+  const index = '{"saves":[]}\n'
+  await writeFile(join(root, 'index.json'), index)
+
+  await initializeBackupRoot(root, META)
+
+  assert.deepEqual(JSON.parse(await readFile(join(root, BACKUP_ROOT_MARKER), 'utf8')), {
+    producer: 'dsh-crash-backup',
+    schemaVersion: 1,
+  })
+  // The marker is added, but files and saves that already exist are untouched.
+  assert.equal(await readFile(join(root, 'index.json'), 'utf8'), index)
+  assert.deepEqual(await readdir(save), ['dsh-save-20260101-120000.zip'])
+  assert.equal((await stat(join(root, 'README.txt'))).isFile(), true)
+  assert.equal((await stat(join(root, 'settings.json'))).isFile(), true)
+})
+
+test('refuses a marker-less folder holding a save and a foreign file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-root-'))
+  await mkdir(join(root, 'dsh-save-20260101-120000'))
+  await writeFile(join(root, 'notes.txt'), '用户数据\n')
+
+  await assert.rejects(initializeBackupRoot(root, META), (error) => {
+    assert.equal(error.code, 'E_NOT_OURS')
+    return true
+  })
+  await assertMissing(join(root, BACKUP_ROOT_MARKER))
+  assert.equal(await readFile(join(root, 'notes.txt'), 'utf8'), '用户数据\n')
 })
 
 test('treats a folder with a malformed marker as foreign', async () => {

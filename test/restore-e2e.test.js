@@ -38,6 +38,12 @@ async function assertMissing(target) {
   await assert.rejects(access(target))
 }
 
+/** The script must not have taken a pre-restore snapshot (the folder may exist). */
+async function assertNoSnapshot(backupRoot) {
+  const entries = await readdir(join(backupRoot, '_pre-restore')).catch(() => [])
+  assert.deepEqual(entries, [], 'the restore script must not write a pre-restore snapshot')
+}
+
 /** Disposable install, home and backup tree with a real generated save. */
 async function prepare(t) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-restore-e2e-'))
@@ -143,7 +149,7 @@ test(
       `cancel must exit 0\nstdout:\n${canceled.stdout}\nstderr:\n${canceled.stderr}`,
     )
     assert.deepEqual(await snapshotTargets(env), before, 'cancel must not modify any target')
-    await assertMissing(join(env.backupRoot, '_pre-restore'))
+    await assertNoSnapshot(env.backupRoot)
     await assertMissing(join(env.backupRoot, RESTORE_LEASE_FILE))
     assert.match(await readRestoreLog(env.backupRoot), /用户取消回档/)
 
@@ -160,7 +166,7 @@ test(
       `a corrupt zip must exit non-zero\nstdout:\n${corrupt.stdout}\nstderr:\n${corrupt.stderr}`,
     )
     assert.deepEqual(await snapshotTargets(env), before, 'a corrupt zip must not modify any target')
-    await assertMissing(join(env.backupRoot, '_pre-restore'))
+    await assertNoSnapshot(env.backupRoot)
     await assertMissing(join(env.backupRoot, RESTORE_LEASE_FILE))
 
     const log = await readRestoreLog(env.backupRoot)

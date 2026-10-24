@@ -1,10 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHandlers } from '../lib/api.js'
+import { createBackup } from '../lib/backup.js'
+import { BACKUP_ROOT_MARKER, initializeBackupRoot } from '../lib/location.js'
 import { restoreLeaseExists, restoreLeasePath } from '../lib/restore.js'
+import { readSavedBackupRoot, saveBackupRoot, validateBackupDir } from '../lib/settings.js'
 
 const SAVE_ID = 'dsh-save-20260101-120000'
 const OTHER_SAVE_ID = 'dsh-save-20260102-130000'
@@ -425,8 +428,13 @@ test('a backup cannot start while updateLocation holds the lock', async () => {
   const gate = new Promise((resolve) => {
     release = resolve
   })
+  let entered
+  const claimed = new Promise((resolve) => {
+    entered = resolve
+  })
   const { deps, calls } = makeDeps({
     validateBackupDir: async () => {
+      entered()
       await gate
       return { ok: true }
     },
@@ -435,6 +443,9 @@ test('a backup cannot start while updateLocation holds the lock', async () => {
   const handlers = createHandlers({ settings, deps })
 
   const updating = handlers.updateLocation({ path: 'D:\\New Root' })
+  // updateLocation checks the lease before claiming the lock, so wait until
+  // the operation actually owns it before starting the competing backup.
+  await claimed
   await assert.rejects(handlers.startBackup(), (error) => {
     assert.equal(error.status, 409)
     return true
@@ -485,6 +496,53 @@ test('updateLocation maps a foreign non-empty folder to 400 without persisting',
   assert.deepEqual(calls.saved, [])
   assert.equal(settings.backupRoot, 'C:\\Backups')
   assert.equal((await handlers.status()).busy, false)
+})
+
+test('updateLocation accepts the root createBackup initialized', async (t) => {
+  const base = await mkdtemp(path.join(tmpdir(), 'dsh-api-root-'))
+  t.after(async () => {
+    await rm(base, { recursive: true, force: true })
+  })
+  const installDir = path.join(base, 'install')
+  const home = path.join(base, 'home')
+  const profileDir = path.join(home, 'profiles', 'desktop')
+  await mkdir(installDir, { recursive: true })
+  await mkdir(profileDir, { recursive: true })
+  await writeFile(path.join(installDir, 'version'), '44.7.0')
+  await writeFile(path.join(profileDir, 'package.json'), '{}')
+
+  const settings = {
+    installDir,
+    home,
+    profile: 'desktop',
+    profileDir,
+    backupRoot: path.join(base, 'dsh-backups'),
+    backupRootSource: 'override',
+    maxSaves: 3,
+  }
+  const { id } = await createBackup(settings)
+
+  // The first backup must make the auto-created root self-describing.
+  const marker = JSON.parse(
+    await readFile(path.join(settings.backupRoot, BACKUP_ROOT_MARKER), 'utf8'),
+  )
+  assert.equal(marker.producer, 'dsh-crash-backup')
+  await access(path.join(settings.backupRoot, 'README.txt'))
+
+  const { deps } = makeDeps({
+    validateBackupDir,
+    initializeBackupRoot,
+    saveBackupRoot,
+    readDshVersion: async () => '44.7.0',
+    restoreLeaseExists: (current) => restoreLeaseExists(current.backupRoot),
+  })
+  const handlers = createHandlers({ settings, deps })
+
+  const body = await handlers.updateLocation({ path: settings.backupRoot })
+
+  assert.deepEqual(body, { backupRoot: settings.backupRoot })
+  assert.equal(readSavedBackupRoot(home), settings.backupRoot)
+  await access(path.join(settings.backupRoot, id))
 })
 
 test('a restore lease file keeps status busy and clears when it disappears', async (t) => {
@@ -562,6 +620,45 @@ test('startBackup and startRestore refuse while a restore lease exists', async (
   assert.equal((await handlers.status()).busy, true)
 })
 
+test('removeSave and updateLocation refuse while a restore lease exists', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-lease-'))
+  const target = await mkdtemp(path.join(tmpdir(), 'dsh-move-'))
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true })
+    await rm(target, { recursive: true, force: true })
+  })
+  const saveDir = path.join(root, SAVE_ID)
+  await mkdir(saveDir)
+  await writeFile(path.join(saveDir, 'keep.txt'), 'save data')
+  const leaseBody = JSON.stringify({ id: SAVE_ID, mode: 'full' })
+  await writeFile(restoreLeasePath(root), leaseBody)
+
+  const { deps, calls } = makeDeps({
+    restoreLeaseExists: (current) => restoreLeaseExists(current.backupRoot),
+  })
+  const settings = makeSettings({ backupRoot: root })
+  const handlers = createHandlers({ settings, deps })
+
+  await assert.rejects(handlers.removeSave({ id: SAVE_ID }), (error) => {
+    assert.equal(error.status, 409)
+    assert.match(error.message, /正在进行/)
+    return true
+  })
+  await assert.rejects(handlers.updateLocation({ path: target }), (error) => {
+    assert.equal(error.status, 409)
+    assert.match(error.message, /正在进行/)
+    return true
+  })
+
+  assert.deepEqual(calls.deleted, [])
+  assert.deepEqual(calls.saved, [])
+  assert.deepEqual(calls.init, [])
+  assert.equal(settings.backupRoot, root)
+  assert.equal(await readFile(path.join(saveDir, 'keep.txt'), 'utf8'), 'save data')
+  assert.equal(await readFile(restoreLeasePath(root), 'utf8'), leaseBody)
+  assert.equal(restoreLeaseExists(root), true)
+})
+
 test('backup and restore return an advisory long-path warning', async () => {
   const warning = 'LongPathsEnabled=0'
   const { deps } = makeDeps({
@@ -588,12 +685,17 @@ test('a backup cannot start while removeSave holds the lock', async () => {
   const gate = new Promise((resolve) => {
     release = resolve
   })
+  let entered
+  const claimed = new Promise((resolve) => {
+    entered = resolve
+  })
   let saves = [{ id: SAVE_ID }]
   const deleted = []
   const { deps } = makeDeps({
     listSaves: async () => saves,
     deleteSave: async (_settings, id) => {
       deleted.push(id)
+      entered()
       await gate
       saves = []
     },
@@ -601,6 +703,9 @@ test('a backup cannot start while removeSave holds the lock', async () => {
   const handlers = createHandlers({ settings: makeSettings(), deps })
 
   const deleting = handlers.removeSave({ id: SAVE_ID })
+  // removeSave checks the lease before claiming the lock, so wait until the
+  // operation actually owns it before starting the competing backup.
+  await claimed
   await assert.rejects(handlers.startBackup(), (error) => {
     assert.equal(error.status, 409)
     return true
