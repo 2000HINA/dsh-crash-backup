@@ -108,7 +108,7 @@ $sb   = [ScriptBlock]::Create($text)   # 语法不合法会在这里抛错
 ```
 
 ```text
-parsed=5.1.26100.9711 length=29803 params=[Mode,FromUi,InstallDirOverride,UserDshOverride,BackupRootOverride]
+parsed=5.1.26100.9711 length=29803 params=Mode,FromUi,InstallDirOverride,UserDshOverride,BackupRootOverride
 ```
 
 `[ScriptBlock]::Create` 接受整份脚本，5 个参数名与设计一致（`-Mode`、`-FromUi`、三个路径覆盖参数）。`length` 会随存档 id、路径长度和生成时间变化，上例对应 1.4 那一次运行。
@@ -311,6 +311,7 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 1. [ ] 记录基线（本机已有 2 份旧插件 `dsh-save-slots` 格式存档，含 `payload\` 与 `MANIFEST.json`，没有 `.zip`）。用**不带 zip 的 `dsh-save-*` 目录**作为旧存档集合，记录名称、mtime、顶层文件哈希，以及 payload 的文件数/总字节数：
    ```powershell
    $legacy = Get-ChildItem $backups -Directory -Filter 'dsh-save-*' | Where-Object {
+       -not $_.Name.EndsWith('.partial') -and
        -not (Get-ChildItem $_.FullName -File -Filter '*.zip' -ErrorAction SilentlyContinue)
    }
    $legacy | Select-Object Name, LastWriteTime
@@ -358,20 +359,24 @@ Test-Path "$profile\node_modules\dsh-crash-backup"
 - [ ] 损坏 zip（复制一个存档后截断/改坏 zip）→「无法读取存档压缩包，文件可能已损坏。」
 - [ ] 启动前磁盘空间不足（可用小容量卷模拟）→ 备份目录/安装目录空间提示。
 - [ ] 存档缺少 profile（手工删掉 zip 中的 `profile/desktop` 后运行 `-Mode plugins`）→「存档不包含插件 profile…未修改任何文件。」
-- [ ] 存档内 `manifest.json` 缺失/损坏或 `links` 非法（构造测试存档）→ 在第一次 robocopy 前中止，提示「无法解析 manifest.json…」或「链接指向 profile 之外…」。
+- [ ] 存档内**缺少** `manifest.json`（从 zip 删除该条目）→ 在 tar 列目录阶段中止，提示「存档中缺少 manifest.json，压缩包不完整。」，尚未解压、未修改目标。
+- [ ] `manifest.json` 存在但内容损坏（改坏 JSON）→ 解压后在第一次 robocopy 前中止，提示「无法解析 manifest.json，存档可能已损坏，回档中止。」
+- [ ] `manifest.json` 的 `links` 非法（改成非数组，或让链接指向 profile 之外）→ 解压后在第一次 robocopy 前中止，提示「manifest.json 的 links 不是数组…」或「manifest.json 中的链接指向 profile 之外…」。
 
 写入阶段异常（**不保证原子**）：
 
 > 预检只能拦住能在写入前发现的错误。tar 解压只写 `<backupRoot>\_restore-tmp`；一旦进入恢复阶段，robocopy 开始镜像安装目录/profile，或开始移除、重建 junction，失败就可能留下**部分恢复**的安装目录/profile。`RESTORE.ps1` 没有回滚机制，`_pre-restore` 也不备份安装目录或 `node_modules`。`robocopy`/`tar` 在复制开始后失败时，结果都不是事务性的：`tar` 可能留下不完整的 `_restore-tmp`，`robocopy` 可能留下部分恢复的安装目录/profile，不要假设目标仍是回档前状态。恢复办法：排除失败原因后**从同一份存档重跑**（镜像是幂等的，覆盖会补齐）；若同一份存档仍失败，改用一份已知良好的存档完整回档（没有可用存档时再重装 DSH）。
 
-- [ ] 目标文件被独占（锁定一个会被 robocopy 覆盖的文件）→ robocopy 在 `/R:1 /W:1` 重试后以 ≥8 退出，脚本打印「robocopy 失败…」并写日志；确认安装目录/profile 可能已部分改变（仅插件模式只有 profile；完整模式安装目录和 profile 都可能）。
-  - 操作：先在另一个 Windows PowerShell 窗口锁住文件，然后运行回档（完整或仅插件均可），在脚本失败后释放锁：
+- [ ] 目标文件被独占（锁定一个会被 robocopy 覆盖、且不在 `_pre-restore` 快照里的文件）→ robocopy 在 `/R:1 /W:1` 重试后以 ≥8 退出，脚本打印「robocopy 失败…」并写日志；确认安装目录/profile 可能已部分改变（profile 的目录链接会在 install 镜像前先被移除）。
+  - **为什么不用 `$profile\package.json`**：`RESTORE.ps1` 在第一次 robocopy 前会先把 profile 的三个配置文件复制到 `_pre-restore`（`lib/scripts.js` 的快照阶段）；锁住 `package.json` 会让脚本在快照阶段就以「回档失败」退出，根本到不了 robocopy，测不到写入阶段的半恢复。这里锁 `$install\version`：它不在快照里，完整回档的 install 镜像会覆盖它。
+  - **前置**：下面的锁命令沿用 3.0 定义的 `$install` 等变量，必须在**设置过这些变量的同一个 PowerShell 窗口**执行。新开一个窗口时 `$profile` 是 PowerShell 的自动变量（当前用户的 profile 脚本路径）、`$install` 也为空，会锁错路径或直接报错。本测试只能用**完整回档**（菜单选 `1`，或 `RESTORE.ps1 -Mode full`）；仅插件模式不写安装目录，锁 `$install\version` 不会触发 robocopy 失败。
+  - **操作**：在这个持锁窗口执行：
     ```powershell
-    $lock = [System.IO.File]::Open("$profile\package.json", 'Open', 'ReadWrite', 'None')
-    # 保持此窗口和 $lock 不关闭，去运行 RESTORE.cmd；看到 robocopy 失败后：
+    $lock = [System.IO.File]::Open("$install\version", 'Open', 'ReadWrite', 'None')
+    # 保持此窗口和 $lock 不关闭，去运行 RESTORE.cmd（选 1）；看到 robocopy 失败后：
     $lock.Dispose()
     ```
-  - 失败后**不要**直接重启 DSH；先释放锁，再用同一份存档重跑一次，确认能恢复到存档状态。此测试故意制造半恢复，建议在一次性环境或最后执行。
+  - 失败后**不要**直接重启 DSH；先释放锁，再用同一份存档重跑一次完整回档，确认能恢复到存档状态。此测试故意制造半恢复，建议在一次性环境或最后执行。
 - [ ] 复制中途磁盘写满（可选，需可丢弃的环境；本会话未验证）：回档进行中占满备份盘或安装盘 → tar/robocopy 失败；同样可能留下不完整的临时目录或部分恢复的目标，按上面的方式重跑。启动前的空间预检见上一组，不等价于复制中途写满。
 
 ### 3.7 结果记录表
