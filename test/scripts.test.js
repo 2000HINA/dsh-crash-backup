@@ -23,6 +23,12 @@ const meta = {
   hasProfile: true,
 }
 
+// 守卫分支独有的输出行：`$ModeLabel = if ($Mode -eq 'plugins')` 也包含
+// `if ($Mode -eq 'plugins')`，用它定位守卫会误命中那一行。
+const PLUGINS_GUARD = "Write-Host '插件级回档尚未启用：本脚本目前只支持完整回档。'"
+const MENU_GATE = 'if (-not $ModeExplicit)'
+const MENU_END = "$ModeLabel = if ($Mode -eq 'plugins')"
+
 const POWERSHELL = join(
   process.env.SystemRoot || 'C:\\Windows',
   'System32',
@@ -59,24 +65,38 @@ test('restore script refuses plugin mode without touching the environment', () =
 test('restore script offers a mode menu only without explicit -Mode', () => {
   const ps1 = renderRestorePs1(meta)
   assert.ok(ps1.includes("$ModeExplicit = $PSBoundParameters.ContainsKey('Mode')"))
-  assert.ok(ps1.includes('if (-not $ModeExplicit)'))
-  assert.match(ps1, /请选择回档方式/)
-  assert.ok(ps1.includes('  1. 完整回档（恢复 DSH 安装、插件与用户配置）'))
-  assert.ok(ps1.includes('  2. 仅回滚插件（只恢复插件，不动 DSH 与用户数据）'))
-  assert.ok(ps1.includes('输入 1 或 2'))
+  assert.ok(ps1.includes(MENU_GATE))
 
-  const menuStart = ps1.indexOf('请选择回档方式')
-  const guardStart = ps1.indexOf('插件级回档尚未启用')
-  assert.ok(menuStart > 0 && guardStart > menuStart, 'menu must run before the plugins guard')
-  const menuBlock = ps1.slice(menuStart, guardStart)
+  // 菜单及 1/2 循环必须整体位于 `-not $ModeExplicit` 分支内：从守卫条件
+  // 到分支后的下一条语句之间取值，而不是只断言文本存在。
+  const menuGate = ps1.indexOf(MENU_GATE)
+  const menuEnd = ps1.indexOf(MENU_END)
+  const guardStart = ps1.indexOf(PLUGINS_GUARD)
+  assert.ok(menuGate > 0, 'menu must be gated on explicit -Mode')
+  assert.ok(ps1.slice(menuGate, menuGate + 40).includes('$ModeExplicit'))
+  assert.ok(menuEnd > menuGate, 'menu branch end marker is missing')
+  assert.ok(guardStart > menuEnd, 'menu must run before the plugins guard')
+  const menuBlock = ps1.slice(menuGate, menuEnd)
+
+  assert.match(menuBlock, /请选择回档方式/)
+  assert.ok(menuBlock.includes('  1. 完整回档（恢复 DSH 安装、插件与用户配置）'))
+  assert.ok(menuBlock.includes('  2. 仅回滚插件（只恢复插件，不动 DSH 与用户数据）'))
+  assert.ok(menuBlock.includes('输入 1 或 2'))
+  assert.ok(menuBlock.includes('while ($true)'), 'the menu must loop until a valid answer')
+
   const one = menuBlock.indexOf("$choice -eq '1'")
   const two = menuBlock.indexOf("$choice -eq '2'")
   assert.ok(one > 0, 'choice 1 must be handled')
   assert.ok(two > one, 'choice 2 must be handled after choice 1')
   assert.ok(menuBlock.indexOf("$Mode = 'full'") > one, 'choice 1 must map to full mode')
   assert.ok(menuBlock.indexOf("$Mode = 'plugins'") > two, 'choice 2 must map to plugins mode')
+  assert.ok(menuBlock.includes('break'), 'the menu loop must exit after a valid choice')
+
+  // EOF 必须在 Trim 之前判定：空串（空行）重新询问，$null（EOF）取消。
+  const eofCheck = menuBlock.indexOf('$null -eq $choice')
+  const trim = menuBlock.indexOf('$choice = $choice.Trim()')
+  assert.ok(eofCheck > 0 && trim > eofCheck, 'EOF must be handled before trimming the answer')
   assert.ok(menuBlock.includes('[Console]::In.ReadLine()'), 'redirected input must use Console.In')
-  assert.ok(menuBlock.includes('$null -eq $choice'), 'EOF must be distinguished from a blank answer')
   assert.ok(menuBlock.includes('已取消回档'), 'EOF must cancel the restore')
   assert.ok(menuBlock.includes('Wait-AnyKey'))
   assert.ok(menuBlock.includes('exit 0'))
@@ -93,6 +113,10 @@ test('mode menu comes before the Y/N confirmation, which names the chosen mode',
   assert.ok(confirmPrompt > question, 'confirmation must come after the mode choice')
   assert.ok(modeLine > 0, 'confirmation must name the chosen mode')
   assert.ok(modeLine < confirmPrompt, 'the mode line belongs to the confirmation block')
+  assert.ok(
+    ps1.includes("Write-Host ('即将执行：{0}' -f $ModeLabel)"),
+    'the confirmation must interpolate $ModeLabel',
+  )
   assert.ok(ps1.includes("$ModeLabel = if ($Mode -eq 'plugins') { '仅回滚插件' } else { '完整回档' }"))
 })
 
@@ -100,12 +124,22 @@ test('explicit -Mode skips the menu and the plugins guard exits 2 before confirm
   const ps1 = renderRestorePs1(meta)
   assert.match(ps1, /\[ValidateSet\('full', 'plugins'\)\]/)
   assert.match(ps1, /\[string\]\$Mode = 'full'/)
-  const guard = ps1.indexOf("if ($Mode -eq 'plugins')")
+
+  // 菜单被 `-not $ModeExplicit` 分支包住，显式传 -Mode 时不会进入。
+  const menuGate = ps1.indexOf(MENU_GATE)
+  const menuEnd = ps1.indexOf(MENU_END)
+  const menu = ps1.indexOf('请选择回档方式')
+  assert.ok(menuGate > 0, 'menu gate is missing')
+  assert.ok(menu > menuGate && menu < menuEnd, 'menu must sit inside the explicit-mode gate')
+
+  // 用守卫独有的输出行定位，避免误命中 `$ModeLabel` 那一行；守卫必须在
+  // 确认提示之前以 exit 2 结束。
+  const guard = ps1.indexOf(PLUGINS_GUARD)
   const confirmPrompt = ps1.indexOf('$confirm = Read-Answer')
+  const exitTwo = ps1.indexOf('exit 2', guard)
   assert.ok(guard > 0, 'plugins guard is missing')
   assert.ok(guard < confirmPrompt, 'plugins guard must exit before the confirmation')
-  assert.match(ps1, /插件级回档尚未启用/)
-  assert.match(ps1, /exit 2/)
+  assert.ok(exitTwo > guard && exitTwo < confirmPrompt, 'the guard must exit 2 before the confirmation')
 })
 
 test('manifest links are validated before the first robocopy', () => {
