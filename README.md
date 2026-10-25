@@ -1,8 +1,8 @@
 # dsh-crash-backup
 
-DSH Desktop 的崩溃备份插件：手动把当前环境压缩成**一个存档文件夹**，DSH 崩溃或无法启动后，直接双击存档里的 `RESTORE.cmd` 就能回档。
+DSH Desktop 的崩溃备份插件：手动把当前环境保存成**一个目录快照**，DSH 崩溃或无法启动后，直接双击存档里的 `RESTORE.cmd` 就能回档。
 
-- **一份存档 = 一个文件夹**：`dsh-save-<时间戳>\`，里面只有一个 `.zip`、一个 `RESTORE.cmd` 和一个 `RESTORE.ps1`。
+- **一份存档 = 一个文件夹**：`dsh-save-<时间戳>\`，里面是 `payload/` 目录、`manifest.json`、`RESTORE.cmd` 和 `RESTORE.ps1`。
 - **只手动备份**：没有定时任务、启动/退出自动备份、agent 工具或后台监听；只有设置页的「备份当前环境」按钮会创建存档。
 - **不依赖 DSH 回档**：`RESTORE.cmd` / `RESTORE.ps1` 是独立脚本，DSH 进程不存在也能运行。
 
@@ -13,8 +13,8 @@ DSH Desktop 的崩溃备份插件：手动把当前环境压缩成**一个存档
 | 操作系统 | Windows 10 1803+ / Windows 11（回档依赖系统自带的 `tar.exe` 和 `robocopy`） |
 | PowerShell | Windows PowerShell 5.1（`RESTORE.ps1` 声明 `#Requires -Version 5.1`） |
 | DSH | DSH Desktop，当前开发与验证版本为 **44.7.0**；其它版本未验证 |
-| 备份空间 | 每份存档约 **1 GB**；备份目录所在磁盘至少 **2 GB** 可用空间 |
-| 回档空间 | 回档要在备份目录内解压临时副本，需额外约 **3 GB**（脚本按压缩包大小 ×3 + 512 MB 估算） |
+| 备份空间 | 每份存档约 **2.6 GB**；备份目录所在磁盘至少 **3 GB** 可用空间 |
+| 回档空间 | 回档直接从存档目录复制，不再需要额外的解压空间 |
 | 权限 | 当前用户可读写 DSH 安装目录、插件 profile 和备份目录 |
 
 只支持 Windows；插件默认管理 `desktop` profile。
@@ -88,7 +88,7 @@ Copy-Item -Path 'C:\tool\dsh-crash-backup\*' -Destination $dest -Recurse -Force
 
 1. 重启 DSH，打开 **设置 → 存档**（侧栏也有入口）。
 2. 点击 **备份当前环境**。
-3. 等待进度条依次经过：准备备份 → 检查环境 → 压缩安装目录与插件 → 写入回退脚本 → 完成。备份期间可以继续使用 DSH，但不要关闭进程。
+3. 等待进度条依次经过：准备备份 → 检查环境 → 复制安装目录与插件 → 写入回退脚本 → 完成。备份期间可以继续使用 DSH，但不要关闭进程。
 4. 完成后出现存档卡片，显示创建时间、DSH 版本、插件数量、大小和存档 id。
 
 默认最多保留 **3 份**存档；达到上限后先删除一份旧存档，再备份。备份根目录可以在页面里用「更改目录」修改，不能选磁盘根目录、DSH 安装目录、profile 目录或 DSH home 内部（自动回退目录 `%DSH_HOME%\dsh-backups` 除外）；所选文件夹必须是空文件夹，或已经是本插件的备份目录，否则会被拒绝以免覆盖其中的文件。
@@ -144,12 +144,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode plugins
 ```text
 C:\tool\dsh-backups\
 ├─ dsh-save-20261024-214000\
-│  ├─ dsh-save-20261024-214000.zip   # 压缩存档
-│  ├─ RESTORE.cmd                    # 双击入口
-│  └─ RESTORE.ps1                    # 实际恢复脚本
+│  ├─ payload\                        # install/、profile/、home/、runtimes/
+│  ├─ manifest.json                   # 版本、插件清单、链接与体积
+│  ├─ RESTORE.cmd                     # 双击入口
+│  └─ RESTORE.ps1                     # 实际恢复脚本
 ├─ _pre-restore\<时间戳>\             # 每次回档前的当前配置快照
-├─ _restore-logs\restore-*.log       # 回档日志
-├─ _restore-tmp\                     # 回档解压临时目录，成功后自动清理
+├─ _restore-logs\restore-*.log       # 回档日志（含 robocopy 失败明细）
 ├─ _restore-in-progress.json         # 回档脚本运行期间的占用标记，结束自动删除
 ├─ index.json                        # 存档索引（可重建的缓存）
 ├─ settings.json                     # 备份目录自身的元数据，不是插件设置
@@ -159,21 +159,23 @@ C:\tool\dsh-backups\
 
 如果回档脚本被强制结束（例如在任务管理器里结束进程），`_restore-in-progress.json` 可能残留在备份目录中，需要手动删除；在删除它之前，设置页会一直显示有任务正在进行。
 
-压缩包里包含：`install/`（DSH 安装目录）、`profile/<profile>/`（含 `node_modules`）、其它 profile 的配置文件、`home/`（用户配置白名单，存在时含 `.credentials.yaml`）、`runtimes/` 和 `manifest.json`。`sessions`、`attachments`、`cache` 不在存档里，回档也不会删除它们。
+存档的 `payload/` 里包含：`install/`（DSH 安装目录）、`profile/<profile>/`（含 `node_modules`）、其它 profile 的配置文件、`home/`（用户配置白名单，存在时含 `.credentials.yaml`）、`runtimes/`；`manifest.json` 记录版本、插件清单、链接与体积。`sessions`、`attachments`、`cache` 不在存档里，回档也不会删除它们。
 
 ## 安全与风险
 
-- **存档里有凭据**：`home/.credentials.yaml` 会以明文进入压缩包，可能包含 API Key。不要上传、分享或同步备份目录，建议用 NTFS 权限限制访问，必要时放在 BitLocker 卷上。`_pre-restore` 里的配置也可能含敏感信息。
+- **存档里有凭据**：`home/.credentials.yaml` 会以明文进入存档，可能包含 API Key。不要上传、分享或同步备份目录，建议用 NTFS 权限限制访问，必要时放在 BitLocker 卷上。`_pre-restore` 里的配置也可能含敏感信息。
 - **`/MIR` 会删除文件**：完整回档会把安装目录和插件 profile 恢复到存档时的状态，仅回滚插件同样会镜像整个插件 profile；存档之后新增或修改的内容都会丢失。确认要回到那一刻再执行。
 - **本插件会保留自己**：恢复 profile 时排除 `node_modules\dsh-crash-backup`，并用 `manifest.json` 记录的信息重建 `link:` 依赖的 junction；如果存档创建时插件还没安装，脚本会提示重新安装。
+- **回档前会检查常驻进程**：从 profile 的 `node_modules` 或用户目录启动的进程（dsh-ops 的 `fastctx.exe`/`pwsh.exe`、MCP server 等）会占用要恢复的文件；脚本会列出 PID 与路径并询问是否结束，拒绝或无法结束则中止，不修改任何目标。
+- **时间戳按 2 秒精度比较**：恢复使用 `/FFT`，存档在 exFAT/FAT32 或被复制工具重写时间时，未变化文件会被跳过；代价是“同尺寸且 2 秒内”的改动可能不被复制。
 - **只恢复自己创建的存档**：`RESTORE.ps1` 会执行恢复逻辑，不要运行来路不明的存档脚本。
-- **备份不是瞬间快照**：压缩时 DSH 仍在运行，文件可能在写入过程中变化。重要操作前先备份；备份进行中不要安装或升级插件，也不要修改设置。
+- **备份不是瞬间快照**：复制时 DSH 仍在运行，文件可能在写入过程中变化。重要操作前先备份；备份进行中不要安装或升级插件，也不要修改设置。
 
 ## 与旧插件共存
 
 - 旧插件 `dsh-save-slots` 和本插件会各自显示一个「存档」入口。启用本插件前，先在侧栏「插件」页禁用或移除 `dsh-save-slots`，不要同时启用。
-- 本插件只识别「`dsh-save-*` 文件夹里恰好有一个 `.zip`」的存档，旧插件的 `payload` 目录格式不会出现在列表里。
-- **不会删除旧存档**：本插件备份前只清理「名称以 `.partial` 结尾、且超过 30 分钟未更新」的暂存目录。名称不带 `.partial` 的 `dsh-save-*` 文件夹（包括旧插件的 `payload` 存档）不会被删除、迁移或改写，第一次新备份只是忽略它们；旧存档仍可用它自带的 `RESTORE.cmd` 回档。
+- 本插件只识别「`dsh-save-*` 文件夹内含 `payload/` 与 `manifest.json`（producer 为 `dsh-crash-backup`）」的存档；旧插件的 `MANIFEST.json` 格式与旧版 zip 存档不会出现在列表里。
+- **不会删除旧存档**：本插件备份前只清理「名称以 `.partial` 结尾、且超过 30 分钟未更新」的暂存目录。名称不带 `.partial` 的 `dsh-save-*` 文件夹（包括旧插件存档与旧 zip 存档）不会被删除、迁移或改写，第一次新备份只是忽略它们；旧存档仍可用它自带的 `RESTORE.cmd` 回档。
 - **仍建议分开目录**：旧插件的默认备份根也是 `C:\tool\dsh-backups`，与本插件默认值相同，所以**默认就是共用同一个目录**。共用时两类存档混在一起，旧存档又不显示在本插件列表里，不容易分辨；建议点设置页 **更改目录** 把新插件指到另一个目录（例如 `D:\dsh-backups`），或把旧存档整体移到 `D:\dsh-save-slots-backups`。
 
 ## 卸载
@@ -200,8 +202,8 @@ C:\tool\dsh-backups\
 | 设置页看不到「存档」 | bundle 未启用或 DSH 未重启。打开侧栏「插件」页确认 `dsh-crash-backup` 已启用；手动安装的检查 `cordis.patch.yml` 和 `node_modules` 路径 |
 | 选择目录 / 打开文件夹的窗口看不到 | 窗口可能被 DSH 挡在后面，查看任务栏或重试；仍不行时手动创建目录并写入 `%USERPROFILE%\.dsh\dsh-crash-backup\settings.json`：`{"backupRoot": "D:\\dsh-backups"}`，重启 DSH |
 | 双击 `RESTORE.cmd` 窗口一闪而过 | 在存档目录打开 PowerShell 手动运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\RESTORE.ps1 -Mode full`，查看完整报错和 `_restore-logs` 最新日志 |
-| 压缩包损坏或无法读取 | 脚本会在修改任何目标之前中止。换一个存档；检查磁盘错误和杀毒软件隔离记录；不要尝试强行恢复损坏的包 |
-| 磁盘空间不足 | 备份盘至少保留 2 GB；回档需要压缩包 ×3 + 512 MB 的临时空间。清理磁盘，或在设置页把备份目录换到空间更大的卷 |
+| 存档缺少 `payload/` 或 `manifest.json` | 脚本会在修改任何目标之前中止。换一个存档；检查磁盘错误和杀毒软件隔离记录；不要尝试强行恢复损坏的存档 |
+| 磁盘空间不足 | 备份盘至少保留 3 GB；回档需要目标卷至少 256 MB 可用空间。清理磁盘，或在设置页把备份目录换到空间更大的卷 |
 | 提示长路径未启用 | 备份/回档只提示不中止。把 `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` 设为 `1` 并重启 Windows，可避免深层目录因路径过长失败 |
 | 杀毒软件拦截 `RESTORE.ps1` / `RESTORE.cmd` | 把备份目录和 DSH 安装目录加入安全软件排除项，或在安全软件允许后手动运行；不要为此关闭实时防护 |
 | 备份卡住或留下 `.partial` 目录 | 文件可能被杀毒软件/索引服务占用；稍后重试。超过 30 分钟的 `.partial` 会在下次备份前自动清理，也可关闭 DSH 后手动删除 |

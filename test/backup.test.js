@@ -7,13 +7,13 @@ import {
   readFile,
   readdir,
   rm,
+  stat,
   symlink,
   utimes,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listArchive } from '../lib/archive.js'
 import {
   assertModeSupported,
   classifyRemoveError,
@@ -67,7 +67,7 @@ async function assertMissing(target) {
   await assert.rejects(access(target))
 }
 
-test('a successful backup creates exactly zip and restore scripts', async (t) => {
+test('a successful backup creates payload, manifest and restore scripts', async (t) => {
   const { settings } = await fakeEnv(t)
   const stages = []
   const manifest = await createBackup(settings, {
@@ -77,7 +77,7 @@ test('a successful backup creates exactly zip and restore scripts', async (t) =>
   const folder = join(settings.backupRoot, manifest.id)
   assert.deepEqual(
     (await readdir(folder)).sort(),
-    [`${manifest.id}.zip`, 'RESTORE.cmd', 'RESTORE.ps1'].sort(),
+    ['manifest.json', 'payload', 'RESTORE.cmd', 'RESTORE.ps1'].sort(),
   )
 
   const ps1 = await readFile(join(folder, 'RESTORE.ps1'), 'utf8')
@@ -85,9 +85,7 @@ test('a successful backup creates exactly zip and restore scripts', async (t) =>
   assert.ok(ps1.includes(manifest.id))
   assert.ok((await readFile(join(folder, 'RESTORE.cmd'), 'utf8')).includes('RESTORE.ps1'))
 
-  const entries = await listArchive(join(folder, `${manifest.id}.zip`))
   for (const required of [
-    'manifest.json',
     'install/version',
     `profile/${settings.profile}/package.json`,
     'profile/others/headless/package.json',
@@ -96,19 +94,21 @@ test('a successful backup creates exactly zip and restore scripts', async (t) =>
     'home/settings.yaml',
     'runtimes/node/marker.txt',
   ]) {
-    assert.ok(entries.includes(required), `archive is missing ${required}`)
+    await access(join(folder, 'payload', ...required.split('/')))
   }
   // Other profiles contribute config files only, never node_modules.
+  await assertMissing(join(folder, 'payload', 'profile', 'others', 'dsh-tui', 'node_modules'))
+  await assertMissing(join(folder, 'payload', 'profile', 'others', 'dsh-tui', 'pnpm-lock.yaml'))
+
+  const sourceVersion = await readFile(join(settings.installDir, 'version'), 'utf8')
   assert.equal(
-    entries.some((entry) => entry.startsWith('profile/others/dsh-tui/node_modules/')),
-    false,
-    'other-profile node_modules must not be archived',
+    await readFile(join(folder, 'payload', 'install', 'version'), 'utf8'),
+    sourceVersion,
+    'copied files must keep their content',
   )
-  assert.equal(
-    entries.some((entry) => entry.endsWith('pnpm-lock.yaml')),
-    false,
-    'missing other-profile config files must be skipped',
-  )
+  const sourceStat = await stat(join(settings.installDir, 'version'))
+  const copyStat = await stat(join(folder, 'payload', 'install', 'version'))
+  assert.equal(copyStat.mtimeMs, sourceStat.mtimeMs, 'copied files must keep their mtime')
 
   assert.deepEqual(manifest.contents, {
     hasInstall: true,
@@ -130,7 +130,7 @@ test('a successful backup creates exactly zip and restore scripts', async (t) =>
 
   assert.deepEqual(
     [...new Set(stages)],
-    ['checking:1', 'archive:10', 'scripts:90', 'done:100'],
+    ['checking:1', 'copy:10', 'scripts:90', 'done:100'],
   )
 })
 
@@ -200,7 +200,8 @@ test('a failed index update does not fail a published backup', async (t) => {
 
   assert.ok(manifest.id.startsWith('dsh-save-'))
   const names = await readdir(join(settings.backupRoot, manifest.id))
-  assert.ok(names.includes(`${manifest.id}.zip`), 'the published save must survive')
+  assert.ok(names.includes('payload'), 'the published save must survive')
+  assert.ok(names.includes('manifest.json'))
   assert.ok(names.includes('RESTORE.ps1'))
 })
 
@@ -245,7 +246,7 @@ test('cleanupOrphans removes only stale staging, keeps fresh staging, junctions 
   assert.ok((await readFile(join(linkTarget, 'keep.txt'), 'utf8')).includes('precious'))
   assert.ok((await readdir(link)).includes('keep.txt'))
   // The complete save is kept.
-  assert.ok((await readFile(join(settings.backupRoot, manifest.id, `${manifest.id}.zip`))).length > 0)
+  assert.ok((await readdir(join(settings.backupRoot, manifest.id, 'payload'))).length > 0)
 })
 
 test('a legacy payload save survives cleanupOrphans and a new backup', async (t) => {
@@ -360,10 +361,10 @@ test('listSaves reconciles an index that names different folders', async (t) => 
   )
 })
 
-test('listSaves ignores zipless folders and tolerates an unwritable index', async (t) => {
+test('listSaves ignores folders without payload and tolerates an unwritable index', async (t) => {
   const { settings } = await fakeEnv(t)
   await mkdir(settings.backupRoot, { recursive: true })
-  // A damaged leftover without any zip must not count as a save folder.
+  // A damaged leftover without payload/manifest must not count as a save.
   await mkdir(join(settings.backupRoot, 'dsh-save-20261024-070000'), { recursive: true })
   // A directory named index.json makes every index rebuild fail with EPERM.
   await mkdir(join(settings.backupRoot, 'index.json'))

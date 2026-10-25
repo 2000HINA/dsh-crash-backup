@@ -18,11 +18,11 @@ window.__ModuleLoader__.load({
     }
 
     /** Phases during which the progress bar is meaningful. */
-    const ACTIVE_PHASES = new Set(['starting', 'checking', 'archive', 'scripts', 'restore'])
+    const ACTIVE_PHASES = new Set(['starting', 'checking', 'copy', 'scripts', 'restore'])
     const PHASE_KEYS = {
       starting: 'phaseStarting',
       checking: 'phaseChecking',
-      archive: 'phaseArchive',
+      copy: 'phaseCopy',
       scripts: 'phaseScripts',
       done: 'phaseDone',
       failed: 'phaseFailed',
@@ -58,11 +58,11 @@ window.__ModuleLoader__.load({
     const zh = {
       nav: '存档',
       title: '存档',
-      desc: '把当前 DSH 环境压缩成单个存档，崩溃后可用独立脚本完整回档。只有手动点击才会备份，DSH 不会自动创建。',
+      desc: '把当前 DSH 环境保存为目录快照，崩溃后可用独立脚本完整回档。只有手动点击才会备份，DSH 不会自动创建。',
       crashHint: 'DSH 崩溃或无法启动时，打开备份目录，双击任一存档里的 RESTORE.cmd 即可回档。',
       pathLabel: '备份目录',
       folderMissing: '备份目录不存在；下一次备份会自动重新创建。',
-      credentialWarning: '存档压缩包包含 .credentials.yaml（API Key 等登录凭据，未加密）。请勿把存档或备份目录分享、上传给他人，也不要放进公共网盘。',
+      credentialWarning: '存档包含 .credentials.yaml（API Key 等登录凭据，未加密）。请勿把存档或备份目录分享、上传给他人，也不要放进公共网盘。',
       count: '已保存 {count}/{max}',
       backup: '备份当前环境',
       backingUp: '正在备份…',
@@ -101,7 +101,7 @@ window.__ModuleLoader__.load({
       processing: '正在处理…',
       phaseStarting: '准备备份',
       phaseChecking: '检查环境',
-      phaseArchive: '压缩安装目录与插件',
+      phaseCopy: '复制安装目录与插件',
       phaseScripts: '写入回退脚本',
       phaseDone: '完成',
       phaseFailed: '失败',
@@ -111,11 +111,11 @@ window.__ModuleLoader__.load({
     const en = {
       nav: 'Saves',
       title: 'Saves',
-      desc: 'Compress the current DSH environment into one save that an independent script can restore after a crash. Backups only happen when you click the button; DSH never creates one automatically.',
+      desc: 'Copy the current DSH environment into a directory snapshot that an independent script can restore after a crash. Backups only happen when you click the button; DSH never creates one automatically.',
       crashHint: 'If DSH crashes or cannot start, open the backup folder and double-click RESTORE.cmd inside any save to restore it.',
       pathLabel: 'Backup folder',
       folderMissing: 'The backup folder does not exist; the next backup creates it again.',
-      credentialWarning: 'Save archives include .credentials.yaml with API keys and other credentials in plain text. Never share or upload saves or the backup folder.',
+      credentialWarning: 'Saves include .credentials.yaml with API keys and other credentials in plain text. Never share or upload saves or the backup folder.',
       count: '{count}/{max} saved',
       backup: 'Back up now',
       backingUp: 'Backing up…',
@@ -154,7 +154,7 @@ window.__ModuleLoader__.load({
       processing: 'Working…',
       phaseStarting: 'Preparing backup',
       phaseChecking: 'Checking environment',
-      phaseArchive: 'Compressing install and plugins',
+      phaseCopy: 'Copying install and plugins',
       phaseScripts: 'Writing restore script',
       phaseDone: 'Done',
       phaseFailed: 'Failed',

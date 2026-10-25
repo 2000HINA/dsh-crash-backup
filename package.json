@@ -1,9 +1,9 @@
 {
   "name": "dsh-crash-backup",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
-  "description": "Compressed DSH environment backups with a crash-safe restore script.",
+  "description": "Directory-copy DSH environment backups with a crash-safe restore script.",
   "author": "",
   "keywords": [
     "dsh",

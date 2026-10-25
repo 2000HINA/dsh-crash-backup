@@ -55,7 +55,7 @@ test('restore script asks before touching anything', () => {
   assert.match(ps1, /mklink/i)
   assert.match(ps1, /DeepSeek Harness/)
   assert.match(ps1, /Read-Host/)
-  assert.match(ps1, /_restore-tmp/)
+  assert.equal(ps1.includes('_restore-tmp'), false)
   assert.match(ps1, /_pre-restore/)
 })
 
@@ -90,18 +90,21 @@ test('plugins mode warns about its limited scope and DSH version risk', () => {
   )
 })
 
-test('plugins mode preflights the archive profile before the first write', () => {
+test('plugins mode preflights the payload before the first write', () => {
   const ps1 = renderRestorePs1(meta)
   const preflight = ps1.indexOf(PLUGIN_PREFLIGHT)
   const snapshot = ps1.indexOf('$snapshotStamp = Get-Date')
-  const extract = ps1.indexOf('$script:TempDir = Join-Path (Join-Path $BackupRoot')
   const install = ps1.indexOf('Invoke-Robocopy -Source $extractedInstall')
 
   assert.ok(preflight > 0, 'plugins profile preflight is missing')
-  assert.ok(ps1.includes('& $TarPath -tf $ZipPath'), 'the preflight must list archive members')
-  assert.ok(ps1.includes('$hasProfileEntry = $true'), 'the profile member must be detected')
+  assert.ok(ps1.includes("$PayloadPath = Join-Path $PSScriptRoot 'payload'"))
+  assert.ok(
+    ps1.includes('$hasProfileEntry = Test-Path -LiteralPath $profileEntry -PathType Container'),
+    'the profile directory must be checked',
+  )
+  assert.equal(ps1.includes('& $TarPath'), false, 'the restore must not use tar')
+  assert.equal(ps1.includes('$script:TempDir'), false, 'the restore must not extract to a temp dir')
   assert.ok(preflight < snapshot, 'the preflight must run before the snapshot')
-  assert.ok(preflight < extract, 'the preflight must run before extraction')
   assert.ok(preflight < install, 'the preflight must run before any robocopy')
 
   const preflightBlock = ps1.slice(preflight, ps1.indexOf('\n    }', preflight))
@@ -141,19 +144,41 @@ test('plugins mode snapshots only the profile config with a -plugins suffix', ()
   assert.ok(fullSnapshot.includes("Join-Path $HomeDir 'settings.yaml'"))
 })
 
-test('plugins mode extracts only the profile and manifest, never install/home/runtimes', () => {
+test('restore reads payload directly and never extracts an archive', () => {
   const ps1 = renderRestorePs1(meta)
-  const profileMember = ps1.indexOf("$profileMember = 'profile/{0}' -f $SavedProfile")
-  const fullExtract = ps1.indexOf('& $TarPath -xf $ZipPath -C $script:TempDir\n')
-  assert.ok(profileMember > 0, 'plugin-only extraction is missing')
-  assert.ok(fullExtract > profileMember, 'full extraction must stay in the else branch')
+  assert.equal(ps1.includes('tar.exe'), false, 'tar must not be referenced')
+  assert.equal(ps1.includes('-xf'), false, 'nothing is extracted')
+  assert.equal(ps1.includes('_restore-tmp'), false, 'no temp restore directory')
+  assert.ok(ps1.includes("$extractedInstall = Join-Path $PayloadPath 'install'"))
+  assert.ok(
+    ps1.includes("$extractedProfile = Join-Path (Join-Path $PayloadPath 'profile') $SavedProfile"),
+  )
+  assert.ok(ps1.includes("$extractedHome = Join-Path $PayloadPath 'home'"))
+  assert.ok(ps1.includes("$extractedRuntimes = Join-Path $PayloadPath 'runtimes'"))
+})
 
-  const pluginExtract = ps1.slice(profileMember, fullExtract)
-  assert.ok(pluginExtract.includes('& $TarPath -xf $ZipPath -C $script:TempDir $profileMember'))
-  assert.ok(pluginExtract.includes("& $TarPath -xf $ZipPath -C $script:TempDir 'manifest.json'"))
-  for (const forbidden of ['$extractedInstall', '$extractedHome', '$extractedRuntimes']) {
-    assert.equal(pluginExtract.includes(forbidden), false, `${forbidden} must not be extracted`)
-  }
+test('robocopy uses FAT time precision and logs failure details', () => {
+  const ps1 = renderRestorePs1(meta)
+  assert.ok(ps1.includes("'/FFT'"), 'every robocopy must pass /FFT')
+  assert.ok(ps1.includes('$output = @(& robocopy @arguments 2>&1)'))
+  assert.ok(ps1.includes('Add-Content -LiteralPath $script:LogPath'))
+  assert.ok(ps1.includes("match 'ERROR|错误'"), 'failures must be classified from the output')
+  assert.match(ps1, /robocopy 失败（退出码/)
+})
+
+test('restore guards processes running from profile before overwriting', () => {
+  const ps1 = renderRestorePs1(meta)
+  const guard = ps1.indexOf('function Get-ProfileProcesses')
+  const prompt = ps1.indexOf('是否结束这些进程后继续')
+  const stop = ps1.indexOf('Stop-Process -Id $profileProcess.Id')
+  const firstCopy = ps1.indexOf('Invoke-Robocopy -Source $extractedInstall')
+
+  assert.ok(guard > 0, 'the profile process scanner is missing')
+  assert.ok(prompt > guard, 'the guard must ask before killing processes')
+  assert.ok(stop > prompt, 'confirmed processes must be stopped')
+  assert.ok(firstCopy > stop, 'the guard must run before the first robocopy')
+  assert.ok(ps1.includes('$remainingProfileProcesses'))
+  assert.ok(ps1.includes('已取消回档：常驻进程未结束'))
 })
 
 test('install, home and runtimes restores are unreachable in plugins mode', () => {
@@ -341,7 +366,7 @@ test('backup readme explains restore, modes and credential risk', () => {
 
 test('full restore copies profile/others files over the home profiles', () => {
   const ps1 = renderRestorePs1(meta)
-  const others = ps1.indexOf("$extractedOthers = Join-Path (Join-Path $script:TempDir 'profile') 'others'")
+  const others = ps1.indexOf("$extractedOthers = Join-Path (Join-Path $PayloadPath 'profile') 'others'")
   const profileRestore = ps1.indexOf('Invoke-Robocopy -Source $extractedProfile')
 
   assert.ok(others > 0, 'the profile/others restore block is missing')

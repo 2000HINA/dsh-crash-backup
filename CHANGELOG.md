@@ -2,6 +2,25 @@
 
 本项目的所有重要变更记录在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## 0.2.0 - 2026-10-25
+
+### Changed
+
+- **存档形态改为目录复制**：每份存档现在包含 `payload/`（`install`、`profile`、`home`、`runtimes`）、`manifest.json` 与两个恢复脚本；不再生成 `.zip`，也不再依赖 `tar.exe`。
+- **回档不再解压**：直接从存档的 `payload/` 镜像/覆盖恢复，去掉 `_restore-tmp`，恢复峰值空间与耗时下降。
+- **时间戳保真**：备份使用 `robocopy /E /COPY:DAT /DCOPY:DAT /XJ`，保留来源文件的修改时间；恢复使用 `/FFT` 作为 2 秒精度兜底，未变化文件不再被整体重写。
+- **链接处理**：备份用 `/XJ` 不跟随 junction，链接只记入 `manifest.json`，恢复后重建；旧 zip 存档与旧 `MANIFEST.json` 存档不识别、不删除。
+- **索引**：`rebuildIndex` 直接读取存档目录内的 `manifest.json`，识别条件为 `producer === 'dsh-crash-backup'` 且存在 `payload/`。
+
+### Added
+
+- **常驻进程守卫**：覆盖 profile 前扫描从 `node_modules` 或用户目录启动的进程（`fastctx.exe`、`pwsh.exe`、MCP server 等），列出 PID/路径并请求确认；拒绝或无法结束则中止。
+- **robocopy 失败明细**：robocopy 输出写入回档日志，失败时控制台显示错误码与相关路径，而不是只报退出码。
+
+### Fixed
+
+- **回档被常驻进程卡住**：旧版 zip 解压导致时间戳变粗，robocopy 重写整个 `node_modules` 时被 `fastctx.exe` 锁死（退出码 9）；时间戳保真 + `/FFT` + 进程守卫共同修复该失败模式。
+
 ## 0.1.0 - 2026-10-24
 
 ### Added

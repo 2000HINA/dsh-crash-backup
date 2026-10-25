@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createArchive } from '../lib/archive.js'
 import { indexFile, readIndex, rebuildIndex, writeIndex } from '../lib/index-file.js'
 import { buildManifest } from '../lib/manifest.js'
 
@@ -29,12 +28,8 @@ function manifestFor({ id, createdAt, dshVersion, dependencies, totalBytes, hasP
 
 async function saveArchive(root, manifest) {
   const dir = join(root, manifest.id)
-  await mkdir(dir, { recursive: true })
-  await createArchive({
-    zipPath: join(dir, `${manifest.id}.zip`),
-    sources: [],
-    manifest,
-  })
+  await mkdir(join(dir, 'payload'), { recursive: true })
+  await writeFile(join(dir, 'manifest.json'), `${JSON.stringify(manifest)}\n`)
   return dir
 }
 
@@ -89,10 +84,10 @@ test('rebuildIndex lists archives newest first and skips unreadable saves', asyn
   await saveArchive(root, old)
   await saveArchive(root, newer)
 
-  // A save folder whose zip cannot be read is skipped, not fatal.
+  // A save folder whose manifest cannot be read is skipped, not fatal.
   const broken = join(root, 'dsh-save-20261024-110000')
-  await mkdir(broken, { recursive: true })
-  await writeFile(join(broken, 'dsh-save-20261024-110000.zip'), 'not a zip')
+  await mkdir(join(broken, 'payload'), { recursive: true })
+  await writeFile(join(broken, 'manifest.json'), '{ not json')
 
   // A valid zip produced by something else is skipped too.
   const foreign = manifestFor({
