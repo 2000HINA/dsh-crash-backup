@@ -171,13 +171,6 @@ C:\tool\dsh-backups\
 - **只恢复自己创建的存档**：`RESTORE.ps1` 会执行恢复逻辑，不要运行来路不明的存档脚本。
 - **备份不是瞬间快照**：复制时 DSH 仍在运行，文件可能在写入过程中变化。重要操作前先备份；备份进行中不要安装或升级插件，也不要修改设置。
 
-## 与旧插件共存
-
-- 旧插件 `dsh-save-slots` 和本插件会各自显示一个「存档」入口。启用本插件前，先在侧栏「插件」页禁用或移除 `dsh-save-slots`，不要同时启用。
-- 本插件只识别「`dsh-save-*` 文件夹内含 `payload/` 与 `manifest.json`（producer 为 `dsh-crash-backup`）」的存档；旧插件的 `MANIFEST.json` 格式与旧版 zip 存档不会出现在列表里。
-- **不会删除旧存档**：本插件备份前只清理「名称以 `.partial` 结尾、且超过 30 分钟未更新」的暂存目录。名称不带 `.partial` 的 `dsh-save-*` 文件夹（包括旧插件存档与旧 zip 存档）不会被删除、迁移或改写，第一次新备份只是忽略它们；旧存档仍可用它自带的 `RESTORE.cmd` 回档。
-- **仍建议分开目录**：旧插件的默认备份根也是 `C:\tool\dsh-backups`，与本插件默认值相同，所以**默认就是共用同一个目录**。共用时两类存档混在一起，旧存档又不显示在本插件列表里，不容易分辨；建议点设置页 **更改目录** 把新插件指到另一个目录（例如 `D:\dsh-backups`），或把旧存档整体移到 `D:\dsh-save-slots-backups`。
-
 ## 卸载
 
 1. 在侧栏「插件」页禁用 `dsh-crash-backup`；需要彻底移除时用「移除」，或从 profile `package.json` 的 `dependencies` 和 `dsh.profile.bundles` 中删掉 `dsh-crash-backup`。
